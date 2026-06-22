@@ -481,7 +481,7 @@
         {:else if insightsGenerated && !insightsLoading}
           <button class="btn" onclick={refreshInsights}>Refresh</button>
         {/if}
-        {#if insightsGenerated}
+        {#if insights}
           <span class="cached-note">Last generated: {insights.generated_at}</span>
         {/if}
       </div>
