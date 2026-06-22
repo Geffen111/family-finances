@@ -252,6 +252,23 @@ pub async fn assign_category(
 }
 
 #[tauri::command]
+pub async fn assign_categories_bulk(
+    pool: State<'_, SqlitePool>,
+    transaction_ids: Vec<i64>,
+    category_id: Option<i64>,
+) -> Result<i64, String> {
+    for id in &transaction_ids {
+        sqlx::query("UPDATE transactions SET category_id = ? WHERE id = ?")
+            .bind(category_id)
+            .bind(id)
+            .execute(&*pool)
+            .await
+            .map_err(|e| format!("DB update error: {}", e))?;
+    }
+    Ok(transaction_ids.len() as i64)
+}
+
+#[tauri::command]
 pub async fn get_uncategorised_transactions(
     pool: State<'_, SqlitePool>,
     account_id: Option<i64>,

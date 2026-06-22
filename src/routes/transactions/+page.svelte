@@ -66,6 +66,8 @@
   let toastType = $state<"success" | "error">("success");
   let toastVisible = $state(false);
 
+  let searchText = $state("");
+
   let aiProcessing = $state(false);
   let aiSuggestions = $state<CategorisationSuggestion[]>([]);
   let acceptedSet = $state<Set<number>>(new Set());
@@ -109,6 +111,7 @@
       if (filterEnd) params.endDate = filterEnd;
       transactions = await invoke<Transaction[]>("get_transactions", params);
       uncategorisedCount = transactions.filter((t) => t.category_id == null).length;
+      selectedTxIds = new Set();
     } catch (e) {
       showToast(String(e), "error");
     } finally {
@@ -280,11 +283,62 @@
     })
   );
 
-  let totalDebits = $derived(transactions.reduce((sum, t) => sum + t.debit, 0));
-  let totalCredits = $derived(transactions.reduce((sum, t) => sum + t.credit, 0));
+  // Client-side search across description and amounts.
+  let visibleTransactions = $derived.by(() => {
+    const q = searchText.trim().toLowerCase();
+    if (!q) return sortedTransactions;
+    return sortedTransactions.filter(
+      (t) =>
+        t.description.toLowerCase().includes(q) ||
+        String(t.debit).includes(q) ||
+        String(t.credit).includes(q),
+    );
+  });
+
+  let totalDebits = $derived(visibleTransactions.reduce((sum, t) => sum + t.debit, 0));
+  let totalCredits = $derived(visibleTransactions.reduce((sum, t) => sum + t.credit, 0));
   let net = $derived(totalCredits - totalDebits);
 
   let subcategories = $derived(categories.filter((c) => c.parent_id !== null));
+
+  // Bulk selection + re-categorise.
+  let selectedTxIds = $state<Set<number>>(new Set());
+  let bulkCategoryId = $state<string>("");
+
+  let allVisibleSelected = $derived(
+    visibleTransactions.length > 0 && visibleTransactions.every((t) => selectedTxIds.has(t.id)),
+  );
+
+  function toggleSelect(id: number) {
+    const next = new Set(selectedTxIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    selectedTxIds = next;
+  }
+
+  function toggleSelectAll() {
+    if (allVisibleSelected) {
+      selectedTxIds = new Set();
+    } else {
+      selectedTxIds = new Set(visibleTransactions.map((t) => t.id));
+    }
+  }
+
+  async function applyBulkCategory() {
+    if (selectedTxIds.size === 0) return;
+    try {
+      const count = await invoke<number>("assign_categories_bulk", {
+        transactionIds: [...selectedTxIds],
+        categoryId: bulkCategoryId ? Number(bulkCategoryId) : null,
+      });
+      showToast(`Updated ${count} transaction${count === 1 ? "" : "s"}.`, "success");
+      selectedTxIds = new Set();
+      bulkCategoryId = "";
+      await loadTransactions();
+    } catch (e) {
+      showToast(String(e), "error");
+    }
+  }
 
   function getCategoryPath(categoryId: number | null): string {
     if (categoryId == null) return "";
@@ -363,7 +417,22 @@
     <button class="btn btn-sm" onclick={() => { setDatePreset("thisMonth"); applyFilterAndLoad(); }}>This Month</button>
     <button class="btn btn-sm" onclick={() => { setDatePreset("last3Months"); applyFilterAndLoad(); }}>Last 3 Months</button>
     <button class="btn btn-sm" onclick={() => { setDatePreset("all"); applyFilterAndLoad(); }}>All Time</button>
+    <input class="search-input" type="search" placeholder="Search description or amount…" bind:value={searchText} />
   </div>
+
+  {#if selectedTxIds.size > 0}
+    <div class="bulk-bar">
+      <span class="bulk-count">{selectedTxIds.size} selected</span>
+      <select class="cat-select" bind:value={bulkCategoryId}>
+        <option value="">Uncategorised</option>
+        {#each subcategories as cat (cat.id)}
+          <option value={cat.id}>{cat.path}</option>
+        {/each}
+      </select>
+      <button class="btn btn-sm btn-primary" onclick={applyBulkCategory}>Apply to selected</button>
+      <button class="btn btn-sm" onclick={() => { selectedTxIds = new Set(); }}>Clear</button>
+    </div>
+  {/if}
 
   {#if loading}
     <p class="loading">Loading transactions\u2026</p>
@@ -376,6 +445,9 @@
       <table class="tx-table">
         <thead>
           <tr>
+            <th class="cell-check">
+              <input type="checkbox" checked={allVisibleSelected} onchange={toggleSelectAll} aria-label="Select all" />
+            </th>
             <th class="sortable" onclick={() => toggleSort("date")}>
               Date <span class="sort-icon">{sortIcon("date")}</span>
             </th>
@@ -395,8 +467,11 @@
           </tr>
         </thead>
         <tbody>
-          {#each sortedTransactions as tx (tx.id)}
-            <tr>
+          {#each visibleTransactions as tx (tx.id)}
+            <tr class:row-selected={selectedTxIds.has(tx.id)}>
+              <td class="cell-check">
+                <input type="checkbox" checked={selectedTxIds.has(tx.id)} onchange={() => toggleSelect(tx.id)} aria-label="Select transaction" />
+              </td>
               <td class="cell-date">{tx.date}</td>
               <td class="cell-desc">{tx.description}</td>
               <td class="cell-debit">{tx.debit > 0 ? fmt(tx.debit) : "-"}</td>
@@ -538,6 +613,15 @@
   .filters { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; }
   .filters label { font-size: 0.8rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.3rem; }
   .filters input[type="date"] { padding: 0.3rem 0.5rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.8rem; }
+  .search-input { margin-left: auto; min-width: 220px; padding: 0.4rem 0.6rem; border: 1px solid var(--border-color); border-radius: 6px; font-size: 0.85rem; background: var(--bg-card); color: var(--text-primary); }
+
+  .bulk-bar { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; padding: 0.6rem 0.9rem; background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 8px; flex-wrap: wrap; }
+  .bulk-count { font-size: 0.85rem; font-weight: 600; color: #3730a3; }
+  .bulk-bar .cat-select { width: auto; min-width: 200px; }
+
+  .cell-check { width: 2.2rem; text-align: center; }
+  .cell-check input { cursor: pointer; }
+  .row-selected { background: #eef2ff; }
   .loading { color: var(--text-secondary); padding: 2rem 0; }
   .empty-state { border: 2px dashed var(--border-color); border-radius: 8px; padding: 3rem 2rem; text-align: center; color: var(--text-secondary); font-size: 1rem; }
   .table-wrap { max-height: 60vh; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px; }
