@@ -83,7 +83,7 @@ pub async fn upload_categories_csv(
 #[tauri::command]
 pub async fn get_categories(pool: State<'_, SqlitePool>) -> Result<Vec<CategoryWithPath>, String> {
     let rows = sqlx::query_as::<_, Category>(
-        "SELECT id, name, parent_id, monthly_budget, created_at FROM categories ORDER BY \
+        "SELECT id, name, parent_id, monthly_budget, created_at, exclude_from_budget FROM categories ORDER BY \
          CASE WHEN parent_id IS NULL THEN 0 ELSE 1 END, parent_id, name"
     )
     .fetch_all(&*pool)
@@ -101,6 +101,7 @@ pub async fn get_categories(pool: State<'_, SqlitePool>) -> Result<Vec<CategoryW
             parent_id: parent.parent_id,
             monthly_budget: parent.monthly_budget,
             created_at: parent.created_at.clone(),
+            exclude_from_budget: parent.exclude_from_budget,
             path: parent.name.clone(),
         });
 
@@ -112,6 +113,7 @@ pub async fn get_categories(pool: State<'_, SqlitePool>) -> Result<Vec<CategoryW
                     parent_id: child.parent_id,
                     monthly_budget: child.monthly_budget,
                     created_at: child.created_at.clone(),
+                    exclude_from_budget: child.exclude_from_budget,
                     path: format!("{} > {}", parent.name, child.name),
                 });
             }
@@ -152,6 +154,7 @@ pub async fn create_category(
         parent_id,
         monthly_budget,
         created_at: now,
+        exclude_from_budget: false,
     })
 }
 
@@ -164,7 +167,7 @@ pub async fn update_category(
     monthly_budget: Option<f64>,
 ) -> Result<Category, String> {
     let original = sqlx::query_as::<_, Category>(
-        "SELECT id, name, parent_id, monthly_budget, created_at FROM categories WHERE id = ?"
+        "SELECT id, name, parent_id, monthly_budget, created_at, exclude_from_budget FROM categories WHERE id = ?"
     )
     .bind(id)
     .fetch_optional(&*pool)
@@ -193,6 +196,7 @@ pub async fn update_category(
         parent_id: new_parent_id,
         monthly_budget: new_budget,
         created_at: original.created_at,
+        exclude_from_budget: original.exclude_from_budget,
     })
 }
 
@@ -213,6 +217,21 @@ pub async fn delete_category(
         .await
         .map_err(|e| format!("DB delete error: {}", e))?;
 
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_category_exclusion(
+    pool: State<'_, SqlitePool>,
+    id: i64,
+    exclude: bool,
+) -> Result<(), String> {
+    sqlx::query("UPDATE categories SET exclude_from_budget = ? WHERE id = ?")
+        .bind(exclude)
+        .bind(id)
+        .execute(&*pool)
+        .await
+        .map_err(|e| format!("DB update error: {}", e))?;
     Ok(())
 }
 

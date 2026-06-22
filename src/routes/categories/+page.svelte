@@ -7,10 +7,21 @@
     parent_id: number | null;
     monthly_budget: number | null;
     created_at: string;
+    exclude_from_budget: boolean;
     path: string;
   }
 
+  interface BudgetStatus {
+    category_id: number;
+    name: string;
+    path: string;
+    monthly_budget: number;
+    actual: number;
+    percentage: number;
+  }
+
   let categories = $state<Category[]>([]);
+  let budgetStatus = $state<BudgetStatus[]>([]);
   let loading = $state(false);
   let importing = $state(false);
 
@@ -21,11 +32,13 @@
   let formName = $state("");
   let formParentId = $state<number | null>(null);
   let formBudget = $state<string>("");
+  let formExclude = $state(false);
 
   let editId = $state<number>(0);
   let editName = $state("");
   let editParentId = $state<number | null>(null);
   let editBudget = $state<string>("");
+  let editExclude = $state(false);
 
   let deleteId = $state<number>(0);
   let deleteName = $state("");
@@ -47,11 +60,29 @@
     loading = true;
     try {
       categories = await invoke<Category[]>("get_categories");
+      await loadBudgets();
     } catch (e) {
       showToast(String(e), "error");
     } finally {
       loading = false;
     }
+  }
+
+  async function loadBudgets() {
+    // Budgets are tracked against the current calendar month.
+    const now = new Date();
+    const start = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+    try {
+      budgetStatus = await invoke<BudgetStatus[]>("get_budget_status", { startDate: start });
+    } catch (e) {
+      budgetStatus = [];
+    }
+  }
+
+  function budgetColor(pct: number): string {
+    if (pct >= 100) return "#dc2626";
+    if (pct >= 80) return "#d97706";
+    return "#16a34a";
   }
 
   function showToast(msg: string, type: "success" | "error") {
@@ -89,17 +120,21 @@
     formName = "";
     formParentId = null;
     formBudget = "";
+    formExclude = false;
     showAddModal = true;
   }
 
   async function handleAdd() {
     if (!formName.trim()) return;
     try {
-      await invoke("create_category", {
+      const created = await invoke<Category>("create_category", {
         name: formName.trim(),
         parent_id: formParentId,
         monthly_budget: formBudget ? parseFloat(formBudget) : null,
       });
+      if (formExclude) {
+        await invoke("set_category_exclusion", { id: created.id, exclude: true });
+      }
       showToast("Category created.", "success");
       showAddModal = false;
       await loadCategories();
@@ -113,6 +148,7 @@
     editName = cat.name;
     editParentId = cat.parent_id;
     editBudget = cat.monthly_budget != null ? String(cat.monthly_budget) : "";
+    editExclude = cat.exclude_from_budget;
     showEditModal = true;
   }
 
@@ -125,6 +161,7 @@
         parentId: editParentId,
         monthlyBudget: editBudget ? parseFloat(editBudget) : null,
       });
+      await invoke("set_category_exclusion", { id: editId, exclude: editExclude });
       showToast("Category updated.", "success");
       showEditModal = false;
       await loadCategories();
@@ -205,6 +242,7 @@
           <div class="parent-info">
             <span class="parent-name">{parent.name}</span>
             <span class="parent-budget">{fmtBudget(parent.monthly_budget)}</span>
+            {#if parent.exclude_from_budget}<span class="excluded-badge">excluded</span>{/if}
           </div>
           <div class="actions">
             <button class="btn btn-sm btn-edit" onclick={() => openEditModal(parent)}>Edit</button>
@@ -216,6 +254,7 @@
             <div class="child-info">
               <span class="child-name">{child.name}</span>
               <span class="child-budget">{fmtBudget(child.monthly_budget)}</span>
+              {#if child.exclude_from_budget}<span class="excluded-badge">excluded</span>{/if}
             </div>
             <div class="actions">
               <button class="btn btn-sm btn-edit" onclick={() => openEditModal(child)}>Edit</button>
@@ -224,6 +263,28 @@
           </div>
         {/each}
       {/each}
+    </div>
+  {/if}
+
+  {#if budgetStatus.length > 0}
+    <div class="budgets-section">
+      <h2>Budgets &mdash; this month</h2>
+      <div class="budget-list">
+        {#each budgetStatus as b (b.category_id)}
+          <div class="budget-item">
+            <div class="budget-head">
+              <span class="budget-name">{b.path}</span>
+              <span class="budget-figures">{currencyFormat.format(b.actual)} / {currencyFormat.format(b.monthly_budget)}</span>
+            </div>
+            <div class="budget-track">
+              <div class="budget-fill" style="width: {Math.min(b.percentage, 100)}%; background: {budgetColor(b.percentage)};"></div>
+            </div>
+            <span class="budget-pct" style="color: {budgetColor(b.percentage)};">
+              {Math.round(b.percentage)}%{b.percentage >= 100 ? " — over budget" : ""}
+            </span>
+          </div>
+        {/each}
+      </div>
     </div>
   {/if}
 </div>
@@ -249,6 +310,10 @@
       <label>
         Monthly Budget
         <input type="number" bind:value={formBudget} placeholder="0.00" step="0.01" min="0" />
+      </label>
+      <label class="checkbox-label">
+        <input type="checkbox" bind:checked={formExclude} />
+        Exclude from budgets &amp; totals (e.g. internal transfers)
       </label>
       <div class="modal-actions">
         <button class="btn" onclick={() => { showAddModal = false; }}>Cancel</button>
@@ -279,6 +344,10 @@
       <label>
         Monthly Budget
         <input type="number" bind:value={editBudget} placeholder="0.00" step="0.01" min="0" />
+      </label>
+      <label class="checkbox-label">
+        <input type="checkbox" bind:checked={editExclude} />
+        Exclude from budgets &amp; totals (e.g. internal transfers)
       </label>
       <div class="modal-actions">
         <button class="btn" onclick={() => { showEditModal = false; }}>Cancel</button>
@@ -474,4 +543,42 @@
     color: var(--text-secondary);
     margin-top: 0.3rem;
   }
+
+  .checkbox-label {
+    flex-direction: row !important;
+    align-items: center;
+    gap: 0.5rem !important;
+    font-weight: 400 !important;
+    color: var(--text-secondary) !important;
+  }
+  .checkbox-label input { width: auto; }
+
+  .excluded-badge {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 0.1rem 0.4rem;
+  }
+
+  .budgets-section { margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border-color); }
+  .budgets-section h2 { font-size: 1.25rem; font-weight: 700; margin-bottom: 1rem; }
+  .budget-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
+  .budget-item {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 0.9rem 1rem;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+  .budget-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; margin-bottom: 0.5rem; }
+  .budget-name { font-size: 0.88rem; font-weight: 600; color: var(--text-primary); }
+  .budget-figures { font-size: 0.8rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .budget-track { height: 8px; background: var(--bg-secondary); border-radius: 999px; overflow: hidden; }
+  .budget-fill { height: 100%; border-radius: 999px; transition: width 0.3s; }
+  .budget-pct { display: inline-block; margin-top: 0.35rem; font-size: 0.75rem; font-weight: 600; }
 </style>

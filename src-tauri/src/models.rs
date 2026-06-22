@@ -17,6 +17,7 @@ pub struct Category {
     pub parent_id: Option<i64>,
     pub monthly_budget: Option<f64>,
     pub created_at: String,
+    pub exclude_from_budget: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -26,6 +27,7 @@ pub struct CategoryWithPath {
     pub parent_id: Option<i64>,
     pub monthly_budget: Option<f64>,
     pub created_at: String,
+    pub exclude_from_budget: bool,
     pub path: String,
 }
 

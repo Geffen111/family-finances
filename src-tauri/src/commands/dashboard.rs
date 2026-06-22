@@ -242,3 +242,73 @@ pub async fn get_spending_trend_by_category(
 
     Ok(result)
 }
+
+#[derive(Debug, serde::Serialize)]
+pub struct BudgetStatus {
+    pub category_id: i64,
+    pub name: String,
+    pub path: String,
+    pub monthly_budget: f64,
+    pub actual: f64,
+    pub percentage: f64,
+}
+
+#[tauri::command]
+pub async fn get_budget_status(
+    pool: State<'_, SqlitePool>,
+    start_date: Option<String>,
+    end_date: Option<String>,
+) -> Result<Vec<BudgetStatus>, String> {
+    // Actual spend per budgeted category, over the given period. The date
+    // filter lives inside a correlated subquery so categories with no
+    // spending in the period still appear (actual = 0).
+    let mut actual = String::from(
+        "COALESCE((SELECT SUM(t.debit) FROM transactions t WHERE t.category_id = c.id",
+    );
+    let mut params: Vec<String> = Vec::new();
+    if let Some(sd) = &start_date {
+        actual.push_str(" AND t.date >= ?");
+        params.push(sd.clone());
+    }
+    if let Some(ed) = &end_date {
+        actual.push_str(" AND t.date <= ?");
+        params.push(ed.clone());
+    }
+    actual.push_str("), 0)");
+
+    let query = format!(
+        "SELECT c.id, c.name,
+                CASE WHEN cp.name IS NOT NULL THEN cp.name || ' > ' || c.name ELSE c.name END,
+                c.monthly_budget,
+                {actual}
+         FROM categories c
+         LEFT JOIN categories cp ON c.parent_id = cp.id
+         WHERE c.monthly_budget IS NOT NULL AND c.monthly_budget > 0
+         ORDER BY 5 DESC"
+    );
+
+    let mut q = sqlx::query_as::<_, (i64, String, String, f64, f64)>(&query);
+    for p in &params {
+        q = q.bind(p);
+    }
+    let rows = q
+        .fetch_all(&*pool)
+        .await
+        .map_err(|e| format!("DB query error: {}", e))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(category_id, name, path, monthly_budget, actual)| BudgetStatus {
+            category_id,
+            name,
+            path,
+            monthly_budget,
+            actual,
+            percentage: if monthly_budget > 0.0 {
+                (actual / monthly_budget) * 100.0
+            } else {
+                0.0
+            },
+        })
+        .collect())
+}
