@@ -1,2 +1,4 @@
 onlyBuiltDependencies:
   - esbuild
+# Don't re-run `pnpm install` before every `pnpm <script>` invocation.
+verifyDepsBeforeRun: false

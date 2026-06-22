@@ -10,6 +10,11 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
+    env:
+      # This CI's pnpm re-runs `pnpm install` before every script (e.g. the
+      # nested `pnpm build` Tauri triggers) and that check hard-fails on the
+      # esbuild build-script gate. Turn the pre-run dependency check off.
+      npm_config_verify_deps_before_run: "false"
 
     steps:
       - uses: actions/checkout@v4
