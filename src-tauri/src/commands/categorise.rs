@@ -27,7 +27,7 @@ fn find_category_id(categories: &[CategoryWithPath], path: &str) -> Option<i64> 
 // Reduce a noisy bank description to a stable "merchant key" so the same payee
 // across different months/amounts collapses to one key. Drops dates, numbers,
 // and common bank-statement boilerplate, keeping the distinctive merchant words.
-fn normalize_desc(desc: &str) -> String {
+pub fn normalize_desc(desc: &str) -> String {
     const NOISE: &[&str] = &[
         "visa", "purchase", "tfr", "wdl", "bpay", "internet", "withdrawal",
         "eftpos", "debit", "card", "direct", "credit", "payment", "pos", "pty",

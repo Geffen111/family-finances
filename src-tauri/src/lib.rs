@@ -37,6 +37,7 @@ pub fn run() {
             commands::settings::get_api_key,
             commands::categorise::categorise_transactions,
             commands::categorise::accept_categorisations,
+            commands::recurring::get_recurring_transactions,
             commands::insights::get_insights,
             commands::insights::refresh_insights,
             commands::forecasting::create_scenario,

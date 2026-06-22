@@ -36,6 +36,16 @@
     amount: number;
   }
 
+  interface RecurringItem {
+    description: string;
+    category: string;
+    frequency: string;
+    occurrences: number;
+    avg_amount: number;
+    monthly_cost: number;
+    last_date: string;
+  }
+
   interface InsightItem {
     title: string;
     detail: string;
@@ -56,6 +66,7 @@
   let categorySpending = $state<CategorySpending[]>([]);
   let monthlyTrends = $state<MonthlyTrend[]>([]);
   let categoryTrends = $state<CategoryTrend[]>([]);
+  let recurring = $state<RecurringItem[]>([]);
   let loading = $state(true);
   let error = $state("");
 
@@ -356,8 +367,19 @@
     })();
   });
 
+  let recurringMonthlyTotal = $derived(recurring.reduce((s, r) => s + r.monthly_cost, 0));
+
+  async function loadRecurring() {
+    try {
+      recurring = await invoke<RecurringItem[]>("get_recurring_transactions");
+    } catch (e) {
+      recurring = [];
+    }
+  }
+
   onMount(() => {
     fetchData();
+    loadRecurring();
     return () => {
       if (doughnutChart) doughnutChart.destroy();
       if (barChart) barChart.destroy();
@@ -468,6 +490,29 @@
           </select>
         </div>
         <div class="chart-wrap"><canvas id="lineChart"></canvas></div>
+      </div>
+    </div>
+  {/if}
+
+  {#if recurring.length > 0}
+    <div class="recurring-section">
+      <div class="recurring-header">
+        <h2>Recurring &amp; Subscriptions</h2>
+        <span class="recurring-total">{fmt(recurringMonthlyTotal)}<span class="recurring-total-label"> / month</span></span>
+      </div>
+      <div class="recurring-grid">
+        {#each recurring as r}
+          <div class="recurring-card">
+            <div class="recurring-card-top">
+              <span class="recurring-desc">{r.description}</span>
+              <span class="recurring-freq">{r.frequency}</span>
+            </div>
+            <div class="recurring-card-bottom">
+              <span class="recurring-amount">{fmt(r.monthly_cost)}<span class="recurring-per">/mo</span></span>
+              <span class="recurring-meta">{fmt(r.avg_amount)} × {r.occurrences} · {r.category}</span>
+            </div>
+          </div>
+        {/each}
       </div>
     </div>
   {/if}
@@ -644,6 +689,21 @@
   .trend-select { padding: 0.35rem 0.5rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.8rem; background: var(--bg-card); color: var(--text-primary); }
   .chart-wrap { position: relative; width: 100%; max-height: 350px; display: flex; justify-content: center; }
   .chart-wrap canvas { max-width: 100%; max-height: 350px; }
+
+  .recurring-section { margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border-color); }
+  .recurring-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem; gap: 0.5rem; flex-wrap: wrap; }
+  .recurring-header h2 { font-size: 1.25rem; font-weight: 700; color: var(--text-primary); margin: 0; }
+  .recurring-total { font-size: 1.35rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+  .recurring-total-label { font-size: 0.85rem; font-weight: 500; color: var(--text-secondary); }
+  .recurring-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1rem; }
+  .recurring-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 1rem 1.1rem; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+  .recurring-card-top { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; margin-bottom: 0.5rem; }
+  .recurring-desc { font-size: 0.88rem; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .recurring-freq { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; color: var(--text-secondary); background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 4px; padding: 0.1rem 0.4rem; white-space: nowrap; }
+  .recurring-card-bottom { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; }
+  .recurring-amount { font-size: 1.1rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+  .recurring-per { font-size: 0.75rem; font-weight: 500; color: var(--text-secondary); }
+  .recurring-meta { font-size: 0.72rem; color: var(--text-secondary); text-align: right; }
 
   .insights-section { margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border-color); }
   .insights-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem; }

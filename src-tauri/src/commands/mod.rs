@@ -8,4 +8,5 @@ pub mod forecasting;
 pub mod dashboard;
 pub mod settings;
 pub mod categorise;
+pub mod recurring;
 pub mod export;
