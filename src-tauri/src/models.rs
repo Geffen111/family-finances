@@ -49,6 +49,16 @@ pub struct Transaction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct SavingsGoal {
+    pub id: i64,
+    pub name: String,
+    pub target_amount: f64,
+    pub current_amount: f64,
+    pub target_date: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Scenario {
     pub id: i64,
     pub name: String,

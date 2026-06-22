@@ -37,6 +37,11 @@
         </a>
       </li>
       <li>
+        <a href="/goals" class="nav-item" class:active={$page.url.pathname.startsWith("/goals")}>
+          <span class="nav-icon">🎯</span> Goals
+        </a>
+      </li>
+      <li>
         <a href="/settings" class="nav-item" class:active={$page.url.pathname.startsWith("/settings")}>
           <span class="nav-icon">⚙️</span> Settings
         </a>
