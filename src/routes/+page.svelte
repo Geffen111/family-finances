@@ -36,6 +36,12 @@
     amount: number;
   }
 
+  interface NetWorthPoint {
+    month: string;
+    label: string;
+    net_worth: number;
+  }
+
   interface RecurringItem {
     description: string;
     category: string;
@@ -67,6 +73,7 @@
   let monthlyTrends = $state<MonthlyTrend[]>([]);
   let categoryTrends = $state<CategoryTrend[]>([]);
   let recurring = $state<RecurringItem[]>([]);
+  let netWorth = $state<NetWorthPoint[]>([]);
   let loading = $state(true);
   let error = $state("");
 
@@ -377,10 +384,58 @@
     }
   }
 
+  async function loadNetWorth() {
+    try {
+      netWorth = await invoke<NetWorthPoint[]>("get_net_worth_trend");
+    } catch (e) {
+      netWorth = [];
+    }
+  }
+
+  let netWorthChart: ChartType | null = null;
+
+  $effect(() => {
+    if (netWorth.length === 0) return;
+    (async () => {
+      const { default: Chart } = await import("chart.js/auto");
+      const canvas = document.getElementById("netWorthChart") as HTMLCanvasElement | null;
+      if (!canvas) return;
+      if (netWorthChart) netWorthChart.destroy();
+      netWorthChart = new Chart(canvas, {
+        type: "line",
+        data: {
+          labels: netWorth.map((p) => p.label),
+          datasets: [{
+            label: "Net Worth",
+            data: netWorth.map((p) => p.net_worth),
+            borderColor: "#2563eb",
+            backgroundColor: "rgba(37, 99, 235, 0.12)",
+            borderWidth: 2,
+            pointRadius: 0,
+            tension: 0.25,
+            fill: true,
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: true,
+          interaction: { intersect: false, mode: "index" },
+          scales: { y: { ticks: { callback: (v: any) => fmt(v) } } },
+          plugins: {
+            legend: { display: false },
+            tooltip: { callbacks: { label: (ctx: any) => `Net worth: ${fmt(ctx.parsed.y ?? ctx.parsed)}` } },
+          },
+        },
+      });
+    })();
+  });
+
   onMount(() => {
     fetchData();
     loadRecurring();
+    loadNetWorth();
     return () => {
+      if (netWorthChart) netWorthChart.destroy();
       if (doughnutChart) doughnutChart.destroy();
       if (barChart) barChart.destroy();
       if (lineChart) lineChart.destroy();
@@ -471,6 +526,12 @@
     </div>
 
     <div class="charts-grid">
+      {#if netWorth.length > 1}
+        <div class="chart-card chart-card-wide">
+          <h3>Net Worth Over Time</h3>
+          <div class="chart-wrap"><canvas id="netWorthChart"></canvas></div>
+        </div>
+      {/if}
       <div class="chart-card">
         <h3>Spending Breakdown</h3>
         <div class="chart-wrap"><canvas id="doughnutChart"></canvas></div>

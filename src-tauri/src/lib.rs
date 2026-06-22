@@ -30,6 +30,7 @@ pub fn run() {
             commands::categories::get_uncategorised_transactions,
             commands::dashboard::get_dashboard_summary,
             commands::dashboard::get_budget_status,
+            commands::dashboard::get_net_worth_trend,
             commands::dashboard::get_spending_by_category,
             commands::dashboard::get_monthly_trends,
             commands::dashboard::get_spending_trend_by_category,

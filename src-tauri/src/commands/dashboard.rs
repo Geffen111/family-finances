@@ -1,6 +1,7 @@
 use crate::models::{CategorySpending, CategoryTrend, DashboardSummary, MonthlyTrend};
 use chrono::NaiveDate;
 use sqlx::SqlitePool;
+use std::collections::{BTreeMap, BTreeSet};
 use tauri::State;
 
 // Excludes transactions whose category is flagged out of budgets/totals
@@ -311,4 +312,91 @@ pub async fn get_budget_status(
             },
         })
         .collect())
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct NetWorthPoint {
+    pub month: String,
+    pub label: String,
+    pub net_worth: f64,
+}
+
+fn next_month(ym: &str) -> String {
+    let mut parts = ym.split('-');
+    let y: i32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(2024);
+    let m: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(1);
+    if m == 12 {
+        format!("{:04}-01", y + 1)
+    } else {
+        format!("{:04}-{:02}", y, m + 1)
+    }
+}
+
+#[tauri::command]
+pub async fn get_net_worth_trend(pool: State<'_, SqlitePool>) -> Result<Vec<NetWorthPoint>, String> {
+    // Liabilities subtract, assets add.
+    let accounts = sqlx::query_as::<_, (i64, String)>("SELECT id, type FROM accounts")
+        .fetch_all(&*pool)
+        .await
+        .map_err(|e| format!("DB query error: {}", e))?;
+    let sign = |acct: i64| -> f64 {
+        accounts
+            .iter()
+            .find(|(id, _)| *id == acct)
+            .map(|(_, t)| if t == "liability" { -1.0 } else { 1.0 })
+            .unwrap_or(1.0)
+    };
+
+    // Last known balance per account per month (rows are date-ordered, so a
+    // later row in the same month overwrites the earlier one).
+    let rows = sqlx::query_as::<_, (i64, String, f64)>(
+        "SELECT account_id, date, balance FROM transactions \
+         WHERE balance IS NOT NULL ORDER BY date ASC",
+    )
+    .fetch_all(&*pool)
+    .await
+    .map_err(|e| format!("DB query error: {}", e))?;
+
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut per_account: BTreeMap<i64, BTreeMap<String, f64>> = BTreeMap::new();
+    let mut months: BTreeSet<String> = BTreeSet::new();
+    for (acct, date, balance) in rows {
+        if date.len() < 7 {
+            continue;
+        }
+        let month = date[..7].to_string();
+        per_account.entry(acct).or_default().insert(month.clone(), balance);
+        months.insert(month);
+    }
+
+    let (Some(first), Some(last)) = (months.iter().next().cloned(), months.iter().next_back().cloned())
+    else {
+        return Ok(Vec::new());
+    };
+
+    let mut result = Vec::new();
+    let mut cur = first;
+    loop {
+        let mut net_worth = 0.0;
+        for (acct, balances) in &per_account {
+            // Most recent balance for this account at or before `cur`.
+            if let Some((_, bal)) = balances.range(..=cur.clone()).next_back() {
+                net_worth += bal * sign(*acct);
+            }
+        }
+        result.push(NetWorthPoint {
+            month: cur.clone(),
+            label: month_label(&cur),
+            net_worth,
+        });
+        if cur == last {
+            break;
+        }
+        cur = next_month(&cur);
+    }
+
+    Ok(result)
 }
