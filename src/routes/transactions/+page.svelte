@@ -133,13 +133,33 @@
     }
     aiProcessing = true;
     try {
-      aiSuggestions = await invoke<CategorisationSuggestion[]>("categorise_transactions");
-      if (aiSuggestions.length === 0) {
+      const all = await invoke<CategorisationSuggestion[]>("categorise_transactions");
+      if (all.length === 0) {
         showToast("No uncategorised transactions found.", "success");
         return;
       }
-      acceptedSet = new Set(aiSuggestions.map((s) => s.transaction_id));
-      showAiModal = true;
+
+      // Auto-apply very high-confidence matches (mostly history matches at
+      // 0.99) without bothering the user; only the rest go to the modal.
+      const auto = all.filter((s) => s.confidence >= 0.95 && s.category_id != null);
+      const review = all.filter((s) => !(s.confidence >= 0.95 && s.category_id != null));
+
+      let autoApplied = 0;
+      if (auto.length > 0) {
+        autoApplied = await invoke<number>("accept_categorisations", { suggestions: auto });
+      }
+
+      if (review.length > 0) {
+        aiSuggestions = review;
+        acceptedSet = new Set(review.map((s) => s.transaction_id));
+        showAiModal = true;
+        if (autoApplied > 0) {
+          showToast(`Auto-applied ${autoApplied}; ${review.length} to review.`, "success");
+        }
+      } else {
+        await loadTransactions();
+        showToast(`Auto-applied ${autoApplied} categorisation${autoApplied === 1 ? "" : "s"}.`, "success");
+      }
     } catch (e) {
       showToast(String(e), "error");
     } finally {
@@ -208,11 +228,12 @@
       const text = await file.text();
       importing = true;
       try {
-        const count = await invoke<number>("csv_import", {
+        const res = await invoke<{ imported: number; skipped_duplicate: number }>("csv_import", {
           csvContent: text,
           accountId: selectedAccountId,
         });
-        showToast(`Imported ${count} transaction${count === 1 ? "" : "s"}.`, "success");
+        const dupNote = res.skipped_duplicate > 0 ? ` (${res.skipped_duplicate} duplicate${res.skipped_duplicate === 1 ? "" : "s"} skipped)` : "";
+        showToast(`Imported ${res.imported} transaction${res.imported === 1 ? "" : "s"}${dupNote}.`, "success");
         await loadTransactions();
       } catch (e) {
         showToast(String(e), "error");

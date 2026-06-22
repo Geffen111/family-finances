@@ -29,12 +29,18 @@ fn looks_like_header(row: &csv::StringRecord) -> bool {
     false
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct CsvImportResult {
+    pub imported: i64,
+    pub skipped_duplicate: i64,
+}
+
 #[tauri::command]
 pub async fn csv_import(
     pool: State<'_, SqlitePool>,
     csv_content: String,
     account_id: i64,
-) -> Result<i64, String> {
+) -> Result<CsvImportResult, String> {
     let mut rdr = ReaderBuilder::new()
         .has_headers(false)
         .flexible(true)
@@ -42,6 +48,7 @@ pub async fn csv_import(
 
     let mut first = true;
     let mut imported: i64 = 0;
+    let mut skipped_duplicate: i64 = 0;
 
     for result in rdr.records() {
         let record = result.map_err(|e| format!("CSV parse error: {}", e))?;
@@ -92,6 +99,26 @@ pub async fn csv_import(
             )
         };
 
+        // Skip a row that already exists for this account (same date,
+        // description and amounts) so re-importing a statement is safe.
+        let exists: bool = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM transactions \
+             WHERE account_id = ? AND date = ? AND description = ? AND debit = ? AND credit = ?",
+        )
+        .bind(account_id)
+        .bind(&date)
+        .bind(description)
+        .bind(debit)
+        .bind(credit)
+        .fetch_one(&*pool)
+        .await
+        .map_err(|e| format!("DB query error: {}", e))?
+            > 0;
+        if exists {
+            skipped_duplicate += 1;
+            continue;
+        }
+
         sqlx::query(
             "INSERT INTO transactions (account_id, date, description, debit, credit, balance) VALUES (?, ?, ?, ?, ?, ?)"
         )
@@ -108,7 +135,10 @@ pub async fn csv_import(
         imported += 1;
     }
 
-    Ok(imported)
+    Ok(CsvImportResult {
+        imported,
+        skipped_duplicate,
+    })
 }
 
 #[tauri::command]
