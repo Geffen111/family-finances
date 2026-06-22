@@ -373,7 +373,7 @@
 {/if}
 
 <style>
-  .page { max-width: 1000px; }
+  .page { max-width: 1100px; margin: 0 auto; }
 
   .header {
     display: flex;
@@ -571,7 +571,7 @@
   .budget-item {
     background: var(--bg-card);
     border: 1px solid var(--border-color);
-    border-radius: 10px;
+    border-radius: 12px;
     padding: 0.9rem 1rem;
     box-shadow: 0 1px 2px rgba(0,0,0,0.04);
   }

@@ -705,12 +705,12 @@
 {/if}
 
 <style>
-  .page { max-width: 1200px; }
+  .page { max-width: 1320px; margin: 0 auto; }
   h1 { font-size: 1.75rem; font-weight: 700; color: var(--text-primary); margin-bottom: 1rem; }
   h2 { font-size: 1.25rem; font-weight: 600; color: var(--text-primary); }
   h3 { font-size: 1rem; font-weight: 600; color: var(--text-primary); margin-bottom: 0.75rem; }
 
-  .section { margin-bottom: 2rem; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; padding: 1.25rem 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+  .section { margin-bottom: 2rem; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.25rem 1.5rem; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
   .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem; }
 
   .btn {
@@ -824,7 +824,7 @@
   .checkbox-group { display: flex; gap: 0.75rem; flex-wrap: wrap; }
   .checkbox-label { font-size: 0.85rem; color: var(--text-primary); display: flex; align-items: center; gap: 0.3rem; cursor: pointer; }
 
-  .chart-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; }
+  .chart-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
   .chart-wrap { position: relative; width: 100%; max-height: 400px; display: flex; justify-content: center; }
   .chart-wrap canvas { max-width: 100%; max-height: 400px; }
 

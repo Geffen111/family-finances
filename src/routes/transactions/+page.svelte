@@ -608,7 +608,7 @@
 {/if}
 
 <style>
-  .page { max-width: 1200px; }
+  .page { max-width: 1320px; margin: 0 auto; }
   .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
   h1 { font-size: 1.75rem; font-weight: 700; color: var(--text-primary); }
   .header-actions { display: flex; gap: 0.5rem; align-items: center; }
@@ -645,7 +645,7 @@
   .row-selected { background: #eef2ff; }
   .loading { color: var(--text-secondary); padding: 2rem 0; }
   .empty-state { border: 2px dashed var(--border-color); border-radius: 8px; padding: 3rem 2rem; text-align: center; color: var(--text-secondary); font-size: 1rem; }
-  .table-wrap { max-height: 60vh; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px; }
+  .table-wrap { max-height: 60vh; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
   .tx-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
   .tx-table thead { position: sticky; top: 0; z-index: 1; }
   .tx-table th { background: var(--bg-secondary); padding: 0.6rem 0.75rem; text-align: left; font-weight: 600; color: var(--text-primary); border-bottom: 2px solid var(--border-color); white-space: nowrap; user-select: none; }
@@ -661,7 +661,7 @@
   .cell-category { min-width: 200px; }
   .cat-select { width: 100%; padding: 0.3rem 0.4rem; font-size: 0.8rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-card); color: var(--text-primary); cursor: pointer; }
   .cat-select:hover { border-color: var(--text-muted); }
-  .summary { display: flex; gap: 2rem; margin-top: 1rem; padding: 0.75rem 1rem; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px; }
+  .summary { display: flex; gap: 2rem; margin-top: 1rem; padding: 0.75rem 1rem; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 12px; }
   .summary-item { display: flex; flex-direction: column; gap: 0.15rem; }
   .summary-label { font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; }
   .summary-value { font-size: 1.05rem; font-weight: 700; font-variant-numeric: tabular-nums; }
