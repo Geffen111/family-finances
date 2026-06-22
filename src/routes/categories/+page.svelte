@@ -168,6 +168,13 @@
   }
 </script>
 
+<svelte:window onkeydown={(e) => {
+  if (e.key !== "Escape") return;
+  showAddModal = false;
+  showEditModal = false;
+  showDeleteConfirm = false;
+}} />
+
 <div class="page">
   <div class="header">
     <h1>Categories</h1>
@@ -223,8 +230,8 @@
 
 <!-- Add Modal -->
 {#if showAddModal}
-  <div class="modal-overlay" onclick={() => { showAddModal = false; }}>
-    <div class="modal" onclick={(e) => e.stopPropagation()}>
+  <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) showAddModal = false; }}>
+    <div class="modal" role="dialog" aria-modal="true" tabindex="-1">
       <h2>Add Category</h2>
       <label>
         Name
@@ -253,8 +260,8 @@
 
 <!-- Edit Modal -->
 {#if showEditModal}
-  <div class="modal-overlay" onclick={() => { showEditModal = false; }}>
-    <div class="modal" onclick={(e) => e.stopPropagation()}>
+  <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) showEditModal = false; }}>
+    <div class="modal" role="dialog" aria-modal="true" tabindex="-1">
       <h2>Edit Category</h2>
       <label>
         Name
@@ -283,8 +290,8 @@
 
 <!-- Delete Confirmation -->
 {#if showDeleteConfirm}
-  <div class="modal-overlay" onclick={() => { showDeleteConfirm = false; }}>
-    <div class="modal modal-sm" onclick={(e) => e.stopPropagation()}>
+  <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) showDeleteConfirm = false; }}>
+    <div class="modal modal-sm" role="dialog" aria-modal="true" tabindex="-1">
       <h2>Delete Category</h2>
       <p>Are you sure you want to delete <strong>{deleteName}</strong>?</p>
       <p class="delete-warning">Transactions in this category will be uncategorised.</p>

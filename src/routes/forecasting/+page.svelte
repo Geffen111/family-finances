@@ -378,6 +378,12 @@
   });
 </script>
 
+<svelte:window onkeydown={(e) => {
+  if (e.key !== "Escape") return;
+  showNewModal = false;
+  editingDefaults = false;
+}} />
+
 <div class="page">
   <h1>Forecasting</h1>
 
@@ -538,8 +544,8 @@
 
     <div class="forecast-controls">
       <div class="control-group">
-        <label class="control-label">Months Ahead: {monthsAhead}</label>
-        <input type="range" min="1" max="24" bind:value={monthsAhead} class="slider" />
+        <label class="control-label" for="months-ahead">Months Ahead: {monthsAhead}</label>
+        <input id="months-ahead" type="range" min="1" max="24" bind:value={monthsAhead} class="slider" />
       </div>
 
       <div class="control-group">
@@ -638,8 +644,8 @@
 
 <!-- New Scenario Modal -->
 {#if showNewModal}
-  <div class="modal-overlay" onclick={() => { showNewModal = false; }}>
-    <div class="modal" onclick={(e) => e.stopPropagation()}>
+  <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) showNewModal = false; }}>
+    <div class="modal" role="dialog" aria-modal="true" tabindex="-1">
       <h2>New Scenario</h2>
       <label>
         Name
@@ -677,8 +683,8 @@
 
 <!-- Defaults Modal -->
 {#if editingDefaults}
-  <div class="modal-overlay" onclick={() => { editingDefaults = false; }}>
-    <div class="modal modal-sm" onclick={(e) => e.stopPropagation()}>
+  <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) editingDefaults = false; }}>
+    <div class="modal modal-sm" role="dialog" aria-modal="true" tabindex="-1">
       <h2>Scenario Defaults</h2>
       <label>
         Default Adjustment (%)
@@ -782,7 +788,6 @@
 
   .config-grid { display: grid; grid-template-columns: 1fr 320px; gap: 1rem; }
   @media (max-width: 800px) { .config-grid { grid-template-columns: 1fr; } }
-  .config-panel { }
   .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
 
   .adj-table-wrap { max-height: 400px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 6px; }

@@ -292,6 +292,8 @@
   }
 </script>
 
+<svelte:window onkeydown={(e) => { if (e.key === "Escape") showAiModal = false; }} />
+
 <div class="page">
   <div class="header">
     <h1>Transactions</h1>
@@ -421,8 +423,8 @@
 </div>
 
 {#if showAiModal}
-  <div class="modal-overlay" onclick={() => { showAiModal = false; }}>
-    <div class="modal" onclick={(e) => e.stopPropagation()}>
+  <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) showAiModal = false; }}>
+    <div class="modal" role="dialog" aria-modal="true" tabindex="-1">
       <div class="modal-header">
         <h2>AI Categorisation Review</h2>
         <button class="modal-close" onclick={() => { showAiModal = false; }}>&times;</button>
