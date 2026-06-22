@@ -414,37 +414,37 @@
   {:else if summary}
     <div class="summary-cards">
       <div class="card">
-        <div class="card-icon card-icon-income">&#x1F4C8;</div>
-        <div class="card-body">
-          <div class="card-label">Total Income</div>
-          <div class="card-value card-income">{fmt(summary.total_income)}</div>
+        <div class="card-top">
+          <span class="card-label">Total Income</span>
+          <span class="card-icon card-icon-income">&#x1F4C8;</span>
+        </div>
+        <div class="card-value card-income">{fmt(summary.total_income)}</div>
+      </div>
+      <div class="card">
+        <div class="card-top">
+          <span class="card-label">Total Expenses</span>
+          <span class="card-icon card-icon-expenses">&#x1F4C9;</span>
+        </div>
+        <div class="card-value card-expenses">{fmt(summary.total_expenses)}</div>
+      </div>
+      <div class="card">
+        <div class="card-top">
+          <span class="card-label">Net</span>
+          <span class="card-icon" class:card-icon-income={summary.net >= 0} class:card-icon-expenses={summary.net < 0}>
+            {summary.net >= 0 ? "\u{1F4C8}" : "\u{1F4C9}"}
+          </span>
+        </div>
+        <div class="card-value" class:card-income={summary.net >= 0} class:card-expenses={summary.net < 0}>
+          {summary.net >= 0 ? "+" : "-"}{fmt(Math.abs(summary.net))}
         </div>
       </div>
       <div class="card">
-        <div class="card-icon card-icon-expenses">&#x1F4C9;</div>
-        <div class="card-body">
-          <div class="card-label">Total Expenses</div>
-          <div class="card-value card-expenses">{fmt(summary.total_expenses)}</div>
+        <div class="card-top">
+          <span class="card-label">Top Category</span>
+          <span class="card-icon card-icon-top">&#x1F3C6;</span>
         </div>
-      </div>
-      <div class="card">
-        <div class="card-icon" class:card-icon-income={summary.net >= 0} class:card-icon-expenses={summary.net < 0}>
-          {summary.net >= 0 ? "\u{1F4C8}" : "\u{1F4C9}"}
-        </div>
-        <div class="card-body">
-          <div class="card-label">Net</div>
-          <div class="card-value" class:card-income={summary.net >= 0} class:card-expenses={summary.net < 0}>
-            {summary.net >= 0 ? "+" : "-"}{fmt(Math.abs(summary.net))}
-          </div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-icon card-icon-top">&#x1F3C6;</div>
-        <div class="card-body">
-          <div class="card-label">Top Category</div>
-          <div class="card-value card-value-sm">{summary.top_category}</div>
-          <div class="card-sub-value">{fmt(summary.top_category_amount)}</div>
-        </div>
+        <div class="card-value card-value-sm">{summary.top_category}</div>
+        <div class="card-sub-value">{fmt(summary.top_category_amount)}</div>
       </div>
     </div>
 
@@ -566,8 +566,8 @@
 </div>
 
 <style>
-  .page { max-width: 1200px; }
-  h1 { font-size: 1.75rem; font-weight: 700; color: var(--text-primary); margin-bottom: 1rem; }
+  .page { max-width: 1320px; margin: 0 auto; }
+  h1 { font-size: 1.75rem; font-weight: 700; color: var(--text-primary); margin-bottom: 1.25rem; }
 
   .filter-bar {
     display: flex;
@@ -620,22 +620,23 @@
   .empty-state { border: 2px dashed var(--border-color); border-radius: 8px; padding: 3rem 2rem; text-align: center; color: var(--text-secondary); font-size: 1rem; }
   .empty-state .btn { margin-top: 1rem; }
 
-  .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
-  .card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; padding: 1.25rem; display: flex; align-items: center; gap: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
-  .card-icon { font-size: 2rem; width: 3rem; height: 3rem; display: flex; align-items: center; justify-content: center; border-radius: 10px; flex-shrink: 0; }
+  .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.25rem; margin-bottom: 2rem; }
+  .card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.25rem 1.35rem; display: flex; flex-direction: column; gap: 0.6rem; box-shadow: 0 1px 2px rgba(0,0,0,0.04); transition: box-shadow 0.15s, transform 0.15s; }
+  .card:hover { box-shadow: 0 4px 14px rgba(0,0,0,0.07); transform: translateY(-1px); }
+  .card-top { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+  .card-icon { font-size: 1.1rem; width: 2.1rem; height: 2.1rem; display: flex; align-items: center; justify-content: center; border-radius: 8px; flex-shrink: 0; }
   .card-icon-income { background: #d1fae5; }
   .card-icon-expenses { background: #fee2e2; }
   .card-icon-top { background: #fef3c7; }
-  .card-body { min-width: 0; }
-  .card-label { font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.2rem; }
-  .card-value { font-size: 1.35rem; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text-primary); }
-  .card-value-sm { font-size: 1rem; }
-  .card-sub-value { font-size: 0.9rem; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+  .card-label { font-size: 0.72rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+  .card-value { font-size: 1.6rem; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text-primary); line-height: 1.1; }
+  .card-value-sm { font-size: 1.05rem; line-height: 1.25; }
+  .card-sub-value { font-size: 0.9rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
   .card-income { color: #16a34a; }
   .card-expenses { color: #dc2626; }
 
-  .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
-  .chart-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; padding: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+  .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.25rem; }
+  .chart-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
   .chart-card-wide { grid-column: 1 / -1; }
   .chart-card h3 { font-size: 1rem; font-weight: 600; color: var(--text-primary); margin-bottom: 1rem; }
   .chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
