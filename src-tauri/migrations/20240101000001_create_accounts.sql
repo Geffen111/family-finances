@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    type TEXT NOT NULL DEFAULT 'asset',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
