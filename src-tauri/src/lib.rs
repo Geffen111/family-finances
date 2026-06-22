@@ -18,6 +18,7 @@ pub fn run() {
             commands::import::csv_import,
             commands::import::get_transactions,
             commands::import::get_accounts,
+            commands::historical::import_historical_csv,
             commands::categories::upload_categories_csv,
             commands::categories::get_categories,
             commands::categories::create_category,

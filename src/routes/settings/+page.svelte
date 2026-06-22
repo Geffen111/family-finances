@@ -14,6 +14,20 @@
   let summaryStartDate = $state("");
   let summaryEndDate = $state("");
 
+  // Historical import state
+  let importingHistory = $state(false);
+  let historyResult = $state<HistoricalImportSummary | null>(null);
+  let historyFileInput = $state<HTMLInputElement | null>(null);
+
+  interface HistoricalImportSummary {
+    imported: number;
+    skipped_duplicate: number;
+    skipped_invalid: number;
+    uncategorised: number;
+    accounts_created: number;
+    categories_created: number;
+  }
+
   $effect(() => {
     invoke<string | null>("get_api_key").then((key) => {
       if (key) {
@@ -93,6 +107,29 @@
       exportingSummary = false;
     }
   }
+
+  async function handleHistoryImport(event: Event) {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+
+    importingHistory = true;
+    historyResult = null;
+    try {
+      const text = await file.text();
+      const summary = await invoke<HistoricalImportSummary>("import_historical_csv", {
+        csvContent: text,
+      });
+      historyResult = summary;
+      showToast(`Imported ${summary.imported} transactions.`, "success");
+    } catch (e) {
+      showToast(String(e), "error");
+    } finally {
+      importingHistory = false;
+      // Allow re-selecting the same file later.
+      if (historyFileInput) historyFileInput.value = "";
+    }
+  }
 </script>
 
 <div class="page">
@@ -121,6 +158,44 @@
         <button class="btn" onclick={handleClear}>Clear</button>
       {/if}
     </div>
+  </div>
+
+  <div class="setting-card">
+    <h2>Import Historical Data</h2>
+    <p class="hint">
+      One-time import of your old spreadsheet export (with Category, Subcategory
+      and notes preserved). Safe to run more than once &mdash; rows already
+      present are skipped. Imported categories also train future
+      auto-categorisation.
+    </p>
+    <input
+      type="file"
+      accept=".csv"
+      bind:this={historyFileInput}
+      onchange={handleHistoryImport}
+      style="display: none;"
+    />
+    <div class="btn-row">
+      <button
+        class="btn btn-primary"
+        onclick={() => historyFileInput?.click()}
+        disabled={importingHistory}
+      >
+        {importingHistory ? "Importing…" : "Choose CSV & Import"}
+      </button>
+    </div>
+    {#if historyResult}
+      <div class="import-summary">
+        <span><strong>{historyResult.imported}</strong> imported</span>
+        <span><strong>{historyResult.skipped_duplicate}</strong> already present</span>
+        <span><strong>{historyResult.uncategorised}</strong> left uncategorised</span>
+        <span><strong>{historyResult.categories_created}</strong> categories created</span>
+        <span><strong>{historyResult.accounts_created}</strong> accounts created</span>
+        {#if historyResult.skipped_invalid > 0}
+          <span><strong>{historyResult.skipped_invalid}</strong> skipped (invalid)</span>
+        {/if}
+      </div>
+    {/if}
   </div>
 
   <div class="setting-card">
@@ -268,4 +343,13 @@
     background: var(--border-color);
     margin: 0.25rem 0;
   }
+  .import-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.25rem;
+    margin-top: 1rem;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+  }
+  .import-summary strong { color: var(--text-primary); }
 </style>

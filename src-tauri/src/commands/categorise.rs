@@ -1,6 +1,7 @@
 use crate::models::CategoryWithPath;
-use crate::services::categorizer::{AiCategorizer, CategorisationResult, TransactionInfo};
+use crate::services::categorizer::{AiCategorizer, TransactionInfo};
 use sqlx::SqlitePool;
+use std::collections::{HashMap, HashSet};
 use tauri::State;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -23,14 +24,48 @@ fn find_category_id(categories: &[CategoryWithPath], path: &str) -> Option<i64> 
     categories.iter().find(|c| c.path == path).map(|c| c.id)
 }
 
+// Reduce a noisy bank description to a stable "merchant key" so the same payee
+// across different months/amounts collapses to one key. Drops dates, numbers,
+// and common bank-statement boilerplate, keeping the distinctive merchant words.
+fn normalize_desc(desc: &str) -> String {
+    const NOISE: &[&str] = &[
+        "visa", "purchase", "tfr", "wdl", "bpay", "internet", "withdrawal",
+        "eftpos", "debit", "card", "direct", "credit", "payment", "pos", "pty",
+        "ltd", "aus", "australia", "ref", "from", "the", "batch", "phone",
+        "value", "date", "transaction", "deposit", "transfer",
+    ];
+    const MONTHS: &[&str] = &[
+        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+    ];
+    desc.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|tok| {
+            let t = *tok;
+            t.len() >= 3
+                && !t.chars().any(|c| c.is_ascii_digit())
+                && !NOISE.contains(&t)
+                && !MONTHS.contains(&t)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+// Collapse whitespace and truncate, for compact few-shot examples.
+fn short_desc(desc: &str) -> String {
+    let collapsed = desc.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() > 60 {
+        let mut s: String = collapsed.chars().take(57).collect();
+        s.push_str("...");
+        s
+    } else {
+        collapsed
+    }
+}
+
 #[tauri::command]
 pub async fn categorise_transactions(
     pool: State<'_, SqlitePool>,
 ) -> Result<Vec<CategorisationSuggestion>, String> {
-    let api_key = crate::commands::settings::get_api_key()
-        .await?
-        .ok_or_else(|| "OpenRouter API key not configured. Go to Settings first.".to_string())?;
-
     let categories = sqlx::query_as::<_, crate::models::Category>(
         "SELECT id, name, parent_id, monthly_budget, created_at FROM categories ORDER BY id"
     )
@@ -75,11 +110,57 @@ pub async fn categorise_transactions(
         }
     }
 
-    let uncategorised: Vec<crate::models::Transaction> = sqlx::query_as::<_, crate::models::Transaction>(
+    // Path lookup by id, for turning a matched category back into a path.
+    let path_by_id: HashMap<i64, String> = category_with_paths
+        .iter()
+        .map(|c| (c.id, c.path.clone()))
+        .collect();
+
+    // Pull the user's already-categorised transactions to learn from.
+    let categorised = sqlx::query_as::<_, crate::models::Transaction>(
+        "SELECT id, account_id, category_id, date, description, debit, credit, balance, \
+         ai_category, ai_category_conf, ai_categorised_at, notes, created_at \
+         FROM transactions WHERE category_id IS NOT NULL",
+    )
+    .fetch_all(&*pool)
+    .await
+    .map_err(|e| format!("DB query error: {}", e))?;
+
+    // history_map: merchant key -> majority category_id seen for that key.
+    // examples: one representative (description -> path) per category, for few-shot.
+    let mut key_counts: HashMap<String, HashMap<i64, u32>> = HashMap::new();
+    let mut examples: Vec<(String, String)> = Vec::new();
+    let mut example_cats: HashSet<i64> = HashSet::new();
+
+    for tx in &categorised {
+        let Some(cid) = tx.category_id else { continue };
+        let key = normalize_desc(&tx.description);
+        if !key.is_empty() {
+            *key_counts.entry(key).or_default().entry(cid).or_insert(0) += 1;
+        }
+        if examples.len() < 25 && !example_cats.contains(&cid) {
+            if let Some(path) = path_by_id.get(&cid) {
+                examples.push((short_desc(&tx.description), path.clone()));
+                example_cats.insert(cid);
+            }
+        }
+    }
+
+    let history_map: HashMap<String, i64> = key_counts
+        .into_iter()
+        .filter_map(|(key, counts)| {
+            counts
+                .into_iter()
+                .max_by_key(|(_, n)| *n)
+                .map(|(cid, _)| (key, cid))
+        })
+        .collect();
+
+    let uncategorised = sqlx::query_as::<_, crate::models::Transaction>(
         "SELECT id, account_id, category_id, date, description, debit, credit, balance, \
          ai_category, ai_category_conf, ai_categorised_at, notes, created_at \
          FROM transactions WHERE category_id IS NULL \
-         ORDER BY date DESC LIMIT 50"
+         ORDER BY date DESC LIMIT 500",
     )
     .fetch_all(&*pool)
     .await
@@ -89,44 +170,76 @@ pub async fn categorise_transactions(
         return Ok(Vec::new());
     }
 
-    let tx_infos: Vec<TransactionInfo> = uncategorised
-        .iter()
-        .map(|t| TransactionInfo {
-            description: t.description.clone(),
-            debit: t.debit,
-            credit: t.credit,
-        })
-        .collect();
-
-    let categorizer = AiCategorizer::new(api_key);
-
     let mut all_results: Vec<CategorisationSuggestion> = Vec::new();
-    let mut remaining = tx_infos.as_slice();
+    // Whatever history can't resolve falls through to the LLM.
+    let mut llm_txs: Vec<&crate::models::Transaction> = Vec::new();
 
-    while !remaining.is_empty() {
-        let batch = if remaining.len() > 50 { &remaining[..50] } else { remaining };
-        let results: Vec<CategorisationResult> = categorizer.categorise_batch(batch, &category_paths).await?;
+    for tx in &uncategorised {
+        let key = normalize_desc(&tx.description);
+        let matched = if key.is_empty() {
+            None
+        } else {
+            history_map.get(&key).and_then(|cid| path_by_id.get(cid).map(|p| (*cid, p.clone())))
+        };
 
-        let batch_start = uncategorised.len() - remaining.len();
-        for (j, result) in results.iter().enumerate() {
-            let tx = &uncategorised[batch_start + j];
-            let category_id = find_category_id(&category_with_paths, &result.category_path);
-            let confidence = if result.confidence > 1.0 { 1.0 } else if result.confidence < 0.0 { 0.0 } else { result.confidence };
-
-            all_results.push(CategorisationSuggestion {
+        match matched {
+            Some((cid, path)) => all_results.push(CategorisationSuggestion {
                 transaction_id: tx.id,
                 date: tx.date.clone(),
                 description: tx.description.clone(),
                 debit: tx.debit,
                 credit: tx.credit,
-                suggested_category: result.category_path.clone(),
-                category_id,
-                confidence,
-                reasoning: result.reasoning.clone(),
-            });
+                suggested_category: path,
+                category_id: Some(cid),
+                confidence: 0.99,
+                reasoning: "Matched your previous categorisation of this merchant".to_string(),
+            }),
+            None => llm_txs.push(tx),
         }
+    }
 
-        remaining = if remaining.len() > 50 { &remaining[50..] } else { &[] };
+    if !llm_txs.is_empty() {
+        let api_key = crate::commands::settings::get_api_key()
+            .await?
+            .ok_or_else(|| {
+                "OpenRouter API key not configured (needed for transactions with no history match). \
+                 Go to Settings first."
+                    .to_string()
+            })?;
+        let categorizer = AiCategorizer::new(api_key);
+
+        for chunk in llm_txs.chunks(50) {
+            let infos: Vec<TransactionInfo> = chunk
+                .iter()
+                .map(|t| TransactionInfo {
+                    description: t.description.clone(),
+                    debit: t.debit,
+                    credit: t.credit,
+                })
+                .collect();
+
+            let results = categorizer
+                .categorise_batch(&infos, &category_paths, &examples)
+                .await?;
+
+            for (j, result) in results.iter().enumerate() {
+                let tx = chunk[j];
+                let category_id = find_category_id(&category_with_paths, &result.category_path);
+                let confidence = result.confidence.clamp(0.0, 1.0);
+
+                all_results.push(CategorisationSuggestion {
+                    transaction_id: tx.id,
+                    date: tx.date.clone(),
+                    description: tx.description.clone(),
+                    debit: tx.debit,
+                    credit: tx.credit,
+                    suggested_category: result.category_path.clone(),
+                    category_id,
+                    confidence,
+                    reasoning: result.reasoning.clone(),
+                });
+            }
+        }
     }
 
     Ok(all_results)

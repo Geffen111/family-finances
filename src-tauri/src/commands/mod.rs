@@ -2,6 +2,7 @@ pub mod transactions;
 pub mod categories;
 pub mod accounts;
 pub mod import;
+pub mod historical;
 pub mod insights;
 pub mod forecasting;
 pub mod dashboard;

@@ -47,12 +47,30 @@ impl AiCategorizer {
         &self,
         transactions: &[TransactionInfo],
         category_paths: &[String],
+        examples: &[(String, String)],
     ) -> Result<Vec<CategorisationResult>, String> {
         let categories_list = category_paths
             .iter()
             .map(|p| format!("- {}", p))
             .collect::<Vec<_>>()
             .join("\n");
+
+        // Few-shot examples drawn from the user's own past categorisations so
+        // the model imitates their conventions and custom category names.
+        let examples_block = if examples.is_empty() {
+            String::new()
+        } else {
+            let lines = examples
+                .iter()
+                .map(|(desc, path)| format!("- \"{}\" -> {}", desc, path))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                "\nExamples of how the user has categorised past transactions \
+(follow these conventions closely):\n{}\n",
+                lines
+            )
+        };
 
         let transactions_json = serde_json::to_string(
             &transactions
@@ -75,7 +93,7 @@ Available categories (Parent > Child):
 {}
 
 For each transaction, return the best matching category path. If no category fits well, use "Unknown > Unknown".
-
+{}
 Respond with a JSON array only:
 [
   {{"transaction_index": 0, "category_path": "Food & Beverage > Food And Groceries", "confidence": 0.95, "reasoning": "Coles is a supermarket"}},
@@ -84,7 +102,7 @@ Respond with a JSON array only:
 
 Transactions to categorise:
 {}"#,
-            categories_list, transactions_json
+            categories_list, examples_block, transactions_json
         );
 
         let body = serde_json::json!({
