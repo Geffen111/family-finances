@@ -37,20 +37,15 @@ fn get_db_path() -> PathBuf {
 }
 
 async fn run_migrations(pool: &SqlitePool) {
-    let migration_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations");
-    let mut entries: Vec<_> = std::fs::read_dir(&migration_dir)
-        .expect("Migrations directory not found")
-        .filter_map(|e| e.ok())
-        .collect();
-    entries.sort_by_key(|e| e.file_name());
-
-    for entry in entries {
-        let sql = std::fs::read_to_string(entry.path()).expect("Failed to read migration");
-        sqlx::query(&sql)
-            .execute(pool)
-            .await
-            .expect("Migration failed");
-    }
+    // Migrations are embedded into the binary at compile time. Reading them
+    // from disk at runtime would look for the build machine's source path,
+    // which doesn't exist on an installed copy, and would also only run the
+    // first statement of multi-statement files. The embedded migrator runs
+    // each full file in order and is idempotent.
+    sqlx::migrate!("./migrations")
+        .run(pool)
+        .await
+        .expect("Migration failed");
 }
 
 async fn seed_accounts(pool: &SqlitePool) {
