@@ -3,6 +3,11 @@ use chrono::NaiveDate;
 use sqlx::SqlitePool;
 use tauri::State;
 
+// Excludes transactions whose category is flagged out of budgets/totals
+// (e.g. internal transfers). NULL-safe: uncategorised rows are kept.
+const EXCLUDE_BUDGET: &str =
+    " AND NOT EXISTS (SELECT 1 FROM categories xc WHERE xc.id = t.category_id AND xc.exclude_from_budget = 1)";
+
 fn apply_date_filters(
     sql: &mut String,
     start_date: &Option<String>,
@@ -36,6 +41,7 @@ pub async fn get_dashboard_summary(
     end_date: Option<String>,
 ) -> Result<DashboardSummary, String> {
     let mut base = String::from("SELECT COALESCE(SUM(t.credit), 0) FROM transactions t WHERE 1=1");
+    base.push_str(EXCLUDE_BUDGET);
     let params = apply_date_filters(&mut base, &start_date, &end_date, "t");
 
     let mut q = sqlx::query_scalar::<_, f64>(&base);
@@ -45,6 +51,7 @@ pub async fn get_dashboard_summary(
     let total_income: f64 = q.fetch_one(&*pool).await.unwrap_or(0.0);
 
     let mut exp_base = String::from("SELECT COALESCE(SUM(t.debit), 0) FROM transactions t WHERE 1=1");
+    exp_base.push_str(EXCLUDE_BUDGET);
     let params2 = apply_date_filters(&mut exp_base, &start_date, &end_date, "t");
     let mut q = sqlx::query_scalar::<_, f64>(&exp_base);
     for p in &params2 {
@@ -66,6 +73,7 @@ pub async fn get_dashboard_summary(
          LEFT JOIN categories c ON t.category_id = c.id
          WHERE 1=1"
     );
+    top_base.push_str(EXCLUDE_BUDGET);
     let params4 = apply_date_filters(&mut top_base, &start_date, &end_date, "t");
     top_base.push_str(" GROUP BY c.name ORDER BY total DESC LIMIT 1");
 
@@ -104,6 +112,7 @@ pub async fn get_spending_by_category(
          LEFT JOIN categories cp ON c.parent_id = cp.id
          WHERE t.debit > 0"
     );
+    query.push_str(EXCLUDE_BUDGET);
     let params = apply_date_filters(&mut query, &start_date, &end_date, "t");
     query.push_str(" GROUP BY c.name ORDER BY SUM(t.debit) DESC");
 
@@ -145,6 +154,7 @@ pub async fn get_monthly_trends(
         "SELECT strftime('%Y-%m', t.date), COALESCE(SUM(t.credit), 0), COALESCE(SUM(t.debit), 0)
          FROM transactions t WHERE 1=1"
     );
+    query.push_str(EXCLUDE_BUDGET);
     let params = apply_date_filters(&mut query, &start_date, &end_date, "t");
     query.push_str(" GROUP BY strftime('%Y-%m', t.date) ORDER BY 1 ASC");
 
@@ -185,6 +195,7 @@ pub async fn get_spending_trend_by_category(
          LEFT JOIN categories c ON t.category_id = c.id
          WHERE 1=1"
     );
+    query.push_str(EXCLUDE_BUDGET);
     let params = apply_date_filters(&mut query, &start_date, &end_date, "t");
 
     if let Some(ref ids) = category_ids {

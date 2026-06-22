@@ -168,6 +168,7 @@ async fn compute_baselines(
          FROM transactions t
          LEFT JOIN categories c ON t.category_id = c.id
          WHERE t.date >= ? AND t.date <= ?
+           AND NOT EXISTS (SELECT 1 FROM categories xc WHERE xc.id = t.category_id AND xc.exclude_from_budget = 1)
          GROUP BY t.category_id, c.name",
     )
     .bind(start_date)

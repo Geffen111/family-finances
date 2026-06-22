@@ -158,6 +158,24 @@
     acceptedSet = new Set(aiSuggestions.map((s) => s.transaction_id));
   }
 
+  // Override the AI's suggested category for one row. Picking a category also
+  // marks the row as accepted so it's included in "Accept Selected".
+  function overrideSuggestion(txId: number, categoryId: number | null) {
+    aiSuggestions = aiSuggestions.map((s) =>
+      s.transaction_id === txId
+        ? {
+            ...s,
+            category_id: categoryId,
+            suggested_category: categoryId === null ? "Uncategorised" : getCategoryPath(categoryId),
+          }
+        : s,
+    );
+    const next = new Set(acceptedSet);
+    if (categoryId === null) next.delete(txId);
+    else next.add(txId);
+    acceptedSet = next;
+  }
+
   async function handleAcceptSelected() {
     const selected = aiSuggestions.filter((s) => acceptedSet.has(s.transaction_id));
     if (selected.length === 0) return;
@@ -451,7 +469,16 @@
                 </span>
               </div>
               <div class="suggestion-category">
-                <span class="suggestion-cat-label">&#8594; {s.suggested_category}</span>
+                <select
+                  class="suggestion-select"
+                  value={s.category_id ?? ""}
+                  onchange={(e) => overrideSuggestion(s.transaction_id, e.currentTarget.value ? Number(e.currentTarget.value) : null)}
+                >
+                  <option value="">&mdash; Uncategorised &mdash;</option>
+                  {#each subcategories as cat (cat.id)}
+                    <option value={cat.id}>{cat.path}</option>
+                  {/each}
+                </select>
                 <span class="suggestion-reasoning">{s.reasoning}</span>
               </div>
               <div class="suggestion-confidence">
@@ -578,9 +605,18 @@
   .suggestion-date { color: var(--text-secondary); white-space: nowrap; }
   .suggestion-desc { font-weight: 500; color: var(--text-primary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .suggestion-amount { font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .suggestion-category { margin-bottom: 0.3rem; }
-  .suggestion-cat-label { font-size: 0.85rem; font-weight: 600; color: #7c3aed; }
-  .suggestion-reasoning { font-size: 0.78rem; color: var(--text-secondary); margin-left: 0.5rem; }
+  .suggestion-category { margin-bottom: 0.3rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+  .suggestion-select {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: #7c3aed;
+    padding: 0.25rem 0.4rem;
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    background: var(--bg-card);
+    max-width: 100%;
+  }
+  .suggestion-reasoning { font-size: 0.78rem; color: var(--text-secondary); }
   .suggestion-confidence { display: flex; align-items: center; gap: 0.5rem; }
   .conf-bar-track { flex: 1; height: 6px; background: var(--border-color); border-radius: 3px; max-width: 120px; }
   .conf-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }

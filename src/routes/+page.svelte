@@ -429,7 +429,7 @@
       </div>
       <div class="card">
         <div class="card-icon" class:card-icon-income={summary.net >= 0} class:card-icon-expenses={summary.net < 0}>
-          {summary.net >= 0 ? "&#x1F4C8;" : "&#x1F4C9;"}
+          {summary.net >= 0 ? "\u{1F4C8}" : "\u{1F4C9}"}
         </div>
         <div class="card-body">
           <div class="card-label">Net</div>

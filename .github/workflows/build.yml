@@ -7,7 +7,7 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 50
     permissions:
       contents: write
     env:
@@ -24,6 +24,8 @@ jobs:
         with:
           # Don't turn compiler warnings into hard errors (the action's default)
           rustflags: ""
+          # x86_64 (host) is already present; add the ARM64 cross target.
+          target: aarch64-pc-windows-msvc
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -46,11 +48,17 @@ jobs:
           pnpm rebuild esbuild
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build Tauri app
+      - name: Build Tauri app (x64)
         shell: powershell
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: pnpm tauri build
+
+      - name: Build Tauri app (ARM64)
+        shell: powershell
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: pnpm tauri build --target aarch64-pc-windows-msvc
 
       - name: Publish to "latest" Release
         uses: softprops/action-gh-release@v2
@@ -59,7 +67,11 @@ jobs:
           name: Family Finance (latest build)
           body: |
             Latest Windows build of Family Finance.
-            Download the `.msi` below, run it, and you're done.
+            Download the installer for your CPU and run it:
+            - `*_x64_*` / `*_x64-setup.exe` for normal Intel/AMD PCs
+            - `*_arm64_*` / `*_arm64-setup.exe` for Windows on ARM laptops
           files: |
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi
+            src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe
