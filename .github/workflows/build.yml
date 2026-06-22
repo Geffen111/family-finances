@@ -8,12 +8,17 @@ jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 30
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          # Don't turn compiler warnings into hard errors (the action's default)
+          rustflags: ""
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -34,14 +39,14 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: pnpm tauri build
 
-      - name: Upload MSI installer
-        uses: actions/upload-artifact@v4
+      - name: Publish to "latest" Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: Family-Finance-Windows
-          path: src-tauri/target/release/bundle/msi/*.msi
-
-      - name: Upload NSIS installer
-        uses: actions/upload-artifact@v4
-        with:
-          name: Family-Finance-Windows-NSIS
-          path: src-tauri/target/release/bundle/nsis/*.exe
+          tag_name: latest
+          name: Family Finance (latest build)
+          body: |
+            Latest Windows build of Family Finance.
+            Download the `.msi` below, run it, and you're done.
+          files: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe
