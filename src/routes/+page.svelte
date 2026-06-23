@@ -81,7 +81,7 @@
   let error = $state("");
 
   type DatePreset = "thisMonth" | "lastMonth" | "last3Months" | "ytd" | "all";
-  let activePreset = $state<DatePreset>("thisMonth");
+  let activePreset = $state<DatePreset>("lastMonth");
   let customStart = $state("");
   let customEnd = $state("");
   let showCustom = $state(false);
@@ -668,26 +668,19 @@
   {/if}
 
   {#if recurring.length > 0}
-    <div class="recurring-section">
-      <div class="recurring-header">
-        <h2>Recurring &amp; Subscriptions</h2>
-        <span class="recurring-total">{fmt(recurringMonthlyTotal)}<span class="recurring-total-label"> / month</span></span>
+    <a href="/recurring" class="recurring-summary-card">
+      <div class="recurring-summary-left">
+        <span class="recurring-summary-icon">&#x1F504;</span>
+        <div>
+          <span class="recurring-summary-label">Expected next month</span>
+          <span class="recurring-summary-count">{recurring.length} recurring items</span>
+        </div>
       </div>
-      <div class="recurring-grid">
-        {#each recurring as r}
-          <div class="recurring-card">
-            <div class="recurring-card-top">
-              <span class="recurring-desc">{r.description}</span>
-              <span class="recurring-freq">{r.frequency}</span>
-            </div>
-            <div class="recurring-card-bottom">
-              <span class="recurring-amount">{fmt(r.monthly_cost)}<span class="recurring-per">/mo</span></span>
-              <span class="recurring-meta">{fmt(r.avg_amount)} × {r.occurrences} · {r.category}</span>
-            </div>
-          </div>
-        {/each}
+      <div class="recurring-summary-right">
+        <span class="recurring-summary-amount">{fmt(recurringMonthlyTotal)}</span>
+        <span class="recurring-summary-per">/month</span>
       </div>
-    </div>
+    </a>
   {/if}
 
 </div>
@@ -757,7 +750,8 @@
   .error-state { text-align: center; padding: 3rem 2rem; color: #991b1b; background: #fee2e2; border: 1px solid #fecaca; border-radius: 14px; }
   .error-detail { font-size: 0.8rem; color: var(--text-secondary); margin: 0.5rem 0 1rem; word-break: break-all; }
   .empty-state { border: 2px dashed var(--border-color); border-radius: 14px; padding: 3rem 2rem; text-align: center; color: var(--text-secondary); font-size: 1rem; }
-  .empty-state .btn { margin-top: 1rem; }
+  .empty-state p { line-height: 1.6; margin-bottom: 1rem; }
+  .empty-state .btn { margin-top: 0; }
 
   .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.25rem; margin-bottom: 1.5rem; }
   .card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-card); padding: 1.25rem 1.4rem; display: flex; flex-direction: column; gap: 0.7rem; box-shadow: var(--app-shadow); transition: box-shadow 0.15s, transform 0.15s; }
@@ -801,19 +795,26 @@
   .child-row { background: var(--bg-secondary); }
   .child-row .cat-name { color: var(--text-primary); }
 
-  .recurring-section { margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border-color); }
-  .recurring-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem; gap: 0.5rem; flex-wrap: wrap; }
-  .recurring-header h2 { font-size: 1.25rem; font-weight: 700; color: var(--text-primary); margin: 0; }
-  .recurring-total { font-size: 1.35rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
-  .recurring-total-label { font-size: 0.85rem; font-weight: 500; color: var(--text-secondary); }
-  .recurring-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1rem; }
-  .recurring-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-card); padding: 1rem 1.1rem; box-shadow: var(--app-shadow); }
-  .recurring-card-top { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; margin-bottom: 0.5rem; }
-  .recurring-desc { font-size: 0.88rem; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .recurring-freq { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; color: var(--text-secondary); background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-pill); padding: 0.15rem 0.55rem; white-space: nowrap; }
-  .recurring-card-bottom { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; }
-  .recurring-amount { font-size: 1.1rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
-  .recurring-per { font-size: 0.75rem; font-weight: 500; color: var(--text-secondary); }
-  .recurring-meta { font-size: 0.72rem; color: var(--text-secondary); text-align: right; }
+  .recurring-summary-card {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 1.25rem;
+    padding: 1rem 1.4rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-card);
+    text-decoration: none;
+    box-shadow: var(--app-shadow);
+    transition: box-shadow 0.15s, transform 0.15s;
+  }
+  .recurring-summary-card:hover { transform: translateY(-1px); box-shadow: 0 4px 18px rgba(0,0,0,0.1); }
+  .recurring-summary-left { display: flex; align-items: center; gap: 0.8rem; }
+  .recurring-summary-icon { font-size: 1.2rem; width: 2.4rem; height: 2.4rem; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--accent-soft); }
+  .recurring-summary-label { display: block; font-size: 0.85rem; font-weight: 600; color: var(--text-primary); }
+  .recurring-summary-count { display: block; font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.1rem; }
+  .recurring-summary-right { text-align: right; }
+  .recurring-summary-amount { font-family: "Bitter", Georgia, serif; font-size: 1.3rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+  .recurring-summary-per { font-size: 0.78rem; color: var(--text-secondary); margin-left: 0.15rem; }
 
 </style>

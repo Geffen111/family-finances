@@ -110,7 +110,7 @@
     letter-spacing: -0.01em;
   }
 
-  :global(*) {
+  :root {
     /* Hearth — light */
     --bg-primary: #ffffff;
     --bg-secondary: #fbf4e9;
