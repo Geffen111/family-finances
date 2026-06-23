@@ -59,14 +59,18 @@
     children: CategorySpendingChild[];
   }
 
-  interface RecurringItem {
-    description: string;
-    category: string;
+  interface RecurringCost {
+    id: number;
+    name: string;
+    amount: number;
     frequency: string;
-    occurrences: number;
-    avg_amount: number;
+    category_id: number | null;
+    category_name: string | null;
+    next_due_date: string | null;
+    active: boolean;
+    notes: string | null;
+    created_at: string;
     monthly_cost: number;
-    last_date: string;
   }
 
   let summary = $state<DashboardSummary | null>(null);
@@ -75,7 +79,7 @@
   let categoryTrends = $state<CategoryTrend[]>([]);
   let categoryTree = $state<CategorySpendingGroup[]>([]);
   let expandedCategories = $state<Set<number>>(new Set());
-  let recurring = $state<RecurringItem[]>([]);
+  let recurring = $state<RecurringCost[]>([]);
   let netWorth = $state<NetWorthPoint[]>([]);
   let loading = $state(true);
   let error = $state("");
@@ -414,11 +418,11 @@
     })();
   });
 
-  let recurringMonthlyTotal = $derived(recurring.reduce((s, r) => s + r.monthly_cost, 0));
+  let recurringMonthlyTotal = $derived(recurring.filter((r) => r.active).reduce((s, r) => s + r.monthly_cost, 0));
 
   async function loadRecurring() {
     try {
-      recurring = await invoke<RecurringItem[]>("get_recurring_transactions");
+      recurring = await invoke<RecurringCost[]>("list_recurring_costs");
     } catch (e) {
       recurring = [];
     }
@@ -435,7 +439,7 @@
   let netWorthChart: ChartType | null = null;
 
   $effect(() => {
-    if (netWorth.length === 0) return;
+    if (loading || netWorth.length === 0) return;
     const dark = $darkMode;
     (async () => {
       void dark;
@@ -787,7 +791,7 @@
   .cat-table-total { font-size: 1.1rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
   .cat-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
   .cat-table th { text-align: left; padding: 0.5rem 0.75rem; background: var(--bg-secondary); border-bottom: 1px solid var(--border-color); font-weight: 600; color: var(--text-secondary); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
-  .cat-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-color); }
+  .cat-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-color); color: var(--text-primary); }
   .cat-table .num-col { text-align: right; font-variant-numeric: tabular-nums; }
   .cat-table .amount { font-weight: 600; color: var(--text-primary); }
   .cat-table .muted { color: var(--text-secondary); font-weight: 400; }
