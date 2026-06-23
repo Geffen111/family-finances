@@ -42,6 +42,22 @@
     net_worth: number;
   }
 
+  interface CategorySpendingChild {
+    category_id: number;
+    name: string;
+    total: number;
+    transaction_count: number;
+  }
+
+  interface CategorySpendingGroup {
+    category_id: number | null;
+    name: string;
+    direct_total: number;
+    total: number;
+    transaction_count: number;
+    children: CategorySpendingChild[];
+  }
+
   interface RecurringItem {
     description: string;
     category: string;
@@ -52,26 +68,12 @@
     last_date: string;
   }
 
-  interface InsightItem {
-    title: string;
-    detail: string;
-    severity: string;
-    icon: string;
-  }
-
-  interface SpendingInsights {
-    summary: string;
-    spending_patterns: InsightItem[];
-    anomalies: InsightItem[];
-    recommendations: InsightItem[];
-    period_label: string;
-    generated_at: string;
-  }
-
   let summary = $state<DashboardSummary | null>(null);
   let categorySpending = $state<CategorySpending[]>([]);
   let monthlyTrends = $state<MonthlyTrend[]>([]);
   let categoryTrends = $state<CategoryTrend[]>([]);
+  let categoryTree = $state<CategorySpendingGroup[]>([]);
+  let expandedCategories = $state<Set<number>>(new Set());
   let recurring = $state<RecurringItem[]>([]);
   let netWorth = $state<NetWorthPoint[]>([]);
   let loading = $state(true);
@@ -84,11 +86,6 @@
   let showCustom = $state(false);
 
   let selectedTrendCategory = $state<string>("top3");
-
-  let insights = $state<SpendingInsights | null>(null);
-  let insightsLoading = $state(false);
-  let insightsError = $state("");
-  let insightsGenerated = $state(false);
 
   const currencyFormat = new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" });
   function fmt(val: number): string { return currencyFormat.format(val); }
@@ -136,48 +133,22 @@
     error = "";
     const params = getParams();
     try {
-      const [s, c, m] = await Promise.all([
+      const [s, c, m, tree] = await Promise.all([
         invoke<DashboardSummary>("get_dashboard_summary", params),
         invoke<CategorySpending[]>("get_spending_by_category", params),
         invoke<MonthlyTrend[]>("get_monthly_trends", params),
+        invoke<CategorySpendingGroup[]>("get_category_spending_tree", params),
       ]);
       summary = s;
       categorySpending = c;
       monthlyTrends = m;
+      categoryTree = tree;
       const trendParams = { ...params };
       categoryTrends = await invoke<CategoryTrend[]>("get_spending_trend_by_category", trendParams);
     } catch (e) {
       error = String(e);
     } finally {
       loading = false;
-    }
-  }
-
-  async function generateInsights() {
-    insightsLoading = true;
-    insightsError = "";
-    const params = getParams();
-    try {
-      insights = await invoke<SpendingInsights>("get_insights", params);
-      insightsGenerated = true;
-    } catch (e) {
-      insightsError = String(e);
-    } finally {
-      insightsLoading = false;
-    }
-  }
-
-  async function refreshInsights() {
-    insightsLoading = true;
-    insightsError = "";
-    const params = getParams();
-    try {
-      insights = await invoke<SpendingInsights>("refresh_insights", params);
-      insightsGenerated = true;
-    } catch (e) {
-      insightsError = String(e);
-    } finally {
-      insightsLoading = false;
     }
   }
 
@@ -198,6 +169,19 @@
       return categoryTrends.filter((ct) => topNames.has(ct.category_name));
     }
     return categoryTrends.filter((ct) => ct.category_name === selectedTrendCategory);
+  }
+
+  function toggleCategory(id: number | null) {
+    if (id == null) return;
+    const next = new Set(expandedCategories);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    expandedCategories = next;
+  }
+
+  let categoryTreeTotal = $derived(categoryTree.reduce((s, g) => s + g.total, 0));
+  function treePct(v: number): number {
+    return categoryTreeTotal > 0 ? (v / categoryTreeTotal) * 100 : 0;
   }
 
   let doughnutData = $derived.by(() => {
@@ -315,13 +299,16 @@
 
   $effect(() => {
     if (loading || categoryTrends.length === 0) return;
+    // Read reactive state synchronously so the effect re-runs when the category
+    // dropdown (or underlying data) changes — anything read only after the
+    // `await` below would not be tracked as a dependency.
+    const filtered = getFilteredTrends();
     (async () => {
       const { default: Chart } = await import("chart.js/auto");
       const canvas = document.getElementById("lineChart") as HTMLCanvasElement | null;
       if (!canvas) return;
       if (lineChart) lineChart.destroy();
 
-      const filtered = getFilteredTrends();
       const monthSet = new Set(filtered.map((ct) => ct.label));
       const labels = [...monthSet].sort();
       const grouped = new Map<string, { data: Map<string, number> }>();
@@ -553,6 +540,62 @@
         <div class="chart-wrap"><canvas id="lineChart"></canvas></div>
       </div>
     </div>
+
+    {#if categoryTree.length > 0}
+      <div class="cat-table-card">
+        <div class="chart-header">
+          <h3>Category Spending</h3>
+          <span class="cat-table-total">{fmt(categoryTreeTotal)}</span>
+        </div>
+        <table class="cat-table">
+          <thead>
+            <tr>
+              <th>Category</th>
+              <th class="num-col">Transactions</th>
+              <th class="num-col">% of total</th>
+              <th class="num-col">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each categoryTree as g (g.category_id ?? "uncat")}
+              {@const hasChildren = g.children.length > 0}
+              {@const expanded = g.category_id != null && expandedCategories.has(g.category_id)}
+              <tr
+                class="parent-row"
+                class:expandable={hasChildren}
+                onclick={() => hasChildren && toggleCategory(g.category_id)}
+              >
+                <td class="cat-name-cell">
+                  <span class="twisty" class:invisible={!hasChildren}>{expanded ? "▾" : "▸"}</span>
+                  <span class="cat-name">{g.name}</span>
+                </td>
+                <td class="num-col">{g.transaction_count}</td>
+                <td class="num-col">{treePct(g.total).toFixed(1)}%</td>
+                <td class="num-col amount">{fmt(g.total)}</td>
+              </tr>
+              {#if expanded}
+                {#if g.direct_total > 0 && hasChildren}
+                  <tr class="child-row">
+                    <td class="cat-name-cell child"><span class="cat-name muted">{g.name} (direct)</span></td>
+                    <td class="num-col"></td>
+                    <td class="num-col muted">{treePct(g.direct_total).toFixed(1)}%</td>
+                    <td class="num-col amount muted">{fmt(g.direct_total)}</td>
+                  </tr>
+                {/if}
+                {#each g.children as child (child.category_id)}
+                  <tr class="child-row">
+                    <td class="cat-name-cell child"><span class="cat-name">{child.name}</span></td>
+                    <td class="num-col">{child.transaction_count}</td>
+                    <td class="num-col muted">{treePct(child.total).toFixed(1)}%</td>
+                    <td class="num-col amount">{fmt(child.total)}</td>
+                  </tr>
+                {/each}
+              {/if}
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
   {/if}
 
   {#if recurring.length > 0}
@@ -578,97 +621,6 @@
     </div>
   {/if}
 
-  <div class="insights-section">
-    <div class="insights-header">
-      <h2>AI Insights</h2>
-      <div class="insights-actions">
-        {#if !insightsGenerated && !insightsLoading}
-          <button class="btn btn-primary" onclick={generateInsights}>Generate Insights</button>
-        {:else if insightsGenerated && !insightsLoading}
-          <button class="btn" onclick={refreshInsights}>Refresh</button>
-        {/if}
-        {#if insights}
-          <span class="cached-note">Last generated: {insights.generated_at}</span>
-        {/if}
-      </div>
-    </div>
-
-    {#if insightsLoading}
-      <div class="insights-loading">
-        <div class="insights-skeleton insight-summary-skeleton"></div>
-        <div class="insights-grid-skeleton">
-          {#each Array(3) as _}
-            <div class="insights-skeleton insight-card-skeleton"></div>
-          {/each}
-        </div>
-      </div>
-    {:else if insightsError}
-      <div class="insights-error">
-        <p>Failed to generate insights.</p>
-        <p class="error-detail">{insightsError}</p>
-        <button class="btn" onclick={generateInsights}>Retry</button>
-      </div>
-    {:else if insights}
-      <div class="insights-summary-card">
-        <p>{insights.summary}</p>
-      </div>
-
-      {#if insights.spending_patterns.length > 0}
-        <h3 class="insights-subheading">Spending Patterns</h3>
-        <div class="insights-grid">
-          {#each insights.spending_patterns as item}
-            <div class="insight-card" class:severity-positive={item.severity === "positive"} class:severity-warning={item.severity === "warning"} class:severity-critical={item.severity === "critical"}>
-              <span class="insight-icon">{item.icon}</span>
-              <div class="insight-body">
-                <div class="insight-title">{item.title}</div>
-                <div class="insight-detail">{item.detail}</div>
-              </div>
-            </div>
-          {/each}
-        </div>
-      {/if}
-
-      {#if insights.anomalies.length > 0}
-        <h3 class="insights-subheading">Anomalies</h3>
-        <div class="insights-grid">
-          {#each insights.anomalies as item}
-            <div class="insight-card" class:severity-positive={item.severity === "positive"} class:severity-warning={item.severity === "warning"} class:severity-critical={item.severity === "critical"}>
-              <span class="insight-icon">{item.icon}</span>
-              <div class="insight-body">
-                <div class="insight-title">{item.title}</div>
-                <div class="insight-detail">{item.detail}</div>
-              </div>
-            </div>
-          {/each}
-        </div>
-      {/if}
-
-      {#if insights.recommendations.length > 0}
-        <h3 class="insights-subheading">Recommendations</h3>
-        <div class="insights-grid">
-          {#each insights.recommendations as item}
-            <div class="insight-card insight-card-recommendation" class:severity-positive={item.severity === "positive"} class:severity-warning={item.severity === "warning"} class:severity-critical={item.severity === "critical"}>
-              <span class="insight-icon">{item.icon}</span>
-              <div class="insight-body">
-                <div class="insight-title">{item.title}</div>
-                <div class="insight-detail">{item.detail}</div>
-              </div>
-            </div>
-          {/each}
-        </div>
-      {/if}
-
-      <div class="insights-refresh-note">
-        <span>Last generated: {insights.generated_at}</span>
-        <button class="btn btn-sm" onclick={refreshInsights}>Refresh</button>
-      </div>
-    {:else if !insightsGenerated}
-      <div class="insights-empty">
-        <p>Generate your first AI insights report to get spending analysis and recommendations.</p>
-        <button class="btn btn-primary" onclick={generateInsights}>Generate Insights</button>
-      </div>
-    {/if}
-  </div>
 </div>
 
 <style>
@@ -751,6 +703,25 @@
   .chart-wrap { position: relative; width: 100%; max-height: 350px; display: flex; justify-content: center; }
   .chart-wrap canvas { max-width: 100%; max-height: 350px; }
 
+  .cat-table-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; box-shadow: 0 1px 2px rgba(0,0,0,0.04); margin-top: 1.25rem; }
+  .cat-table-card h3 { font-size: 1rem; font-weight: 600; color: var(--text-primary); margin-bottom: 0; }
+  .cat-table-total { font-size: 1.1rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+  .cat-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  .cat-table th { text-align: left; padding: 0.5rem 0.75rem; background: var(--bg-secondary); border-bottom: 1px solid var(--border-color); font-weight: 600; color: var(--text-secondary); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  .cat-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-color); }
+  .cat-table .num-col { text-align: right; font-variant-numeric: tabular-nums; }
+  .cat-table .amount { font-weight: 600; color: var(--text-primary); }
+  .cat-table .muted { color: var(--text-secondary); font-weight: 400; }
+  .parent-row.expandable { cursor: pointer; }
+  .parent-row.expandable:hover { background: var(--bg-secondary); }
+  .parent-row .cat-name { font-weight: 600; color: var(--text-primary); }
+  .cat-name-cell { display: flex; align-items: center; gap: 0.5rem; }
+  .cat-name-cell.child { padding-left: 1.9rem; }
+  .twisty { display: inline-block; width: 1rem; text-align: center; color: var(--text-secondary); font-size: 0.7rem; }
+  .twisty.invisible { visibility: hidden; }
+  .child-row { background: var(--bg-secondary); }
+  .child-row .cat-name { color: var(--text-primary); }
+
   .recurring-section { margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border-color); }
   .recurring-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem; gap: 0.5rem; flex-wrap: wrap; }
   .recurring-header h2 { font-size: 1.25rem; font-weight: 700; color: var(--text-primary); margin: 0; }
@@ -766,43 +737,4 @@
   .recurring-per { font-size: 0.75rem; font-weight: 500; color: var(--text-secondary); }
   .recurring-meta { font-size: 0.72rem; color: var(--text-secondary); text-align: right; }
 
-  .insights-section { margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border-color); }
-  .insights-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem; }
-  .insights-header h2 { font-size: 1.25rem; font-weight: 700; color: var(--text-primary); margin: 0; }
-  .insights-actions { display: flex; align-items: center; gap: 0.75rem; }
-  .cached-note { font-size: 0.75rem; color: var(--text-muted); }
-
-  .insights-loading { display: flex; flex-direction: column; gap: 1rem; }
-  .insights-skeleton { background: #e5e7eb; border-radius: 8px; animation: pulse 1.5s infinite; }
-  .insight-summary-skeleton { width: 100%; height: 4rem; }
-  .insight-card-skeleton { width: 100%; height: 6rem; }
-  .insights-grid-skeleton { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
-
-  .insights-error { text-align: center; padding: 2rem; color: #991b1b; background: #fee2e2; border: 1px solid #fecaca; border-radius: 8px; }
-
-  .insights-summary-card { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 10px; padding: 1.25rem; margin-bottom: 1.5rem; }
-  .insights-summary-card p { margin: 0; font-size: 1rem; color: #1e40af; line-height: 1.5; }
-
-  .insights-subheading { font-size: 1rem; font-weight: 600; color: var(--text-primary); margin: 1.5rem 0 0.75rem; }
-
-  .insights-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; margin-bottom: 0.5rem; }
-
-  .insight-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; padding: 1rem; display: flex; gap: 0.75rem; box-shadow: 0 1px 3px rgba(0,0,0,0.04); border-left: 4px solid var(--border-color); }
-  .insight-card.severity-positive { border-left-color: #10b981; }
-  .insight-card.severity-warning { border-left-color: #f59e0b; }
-  .insight-card.severity-critical { border-left-color: #ef4444; }
-  .insight-card-recommendation { border-left-color: #8b5cf6; }
-  .insight-card-recommendation.severity-positive { border-left-color: #10b981; }
-  .insight-card-recommendation.severity-warning { border-left-color: #f59e0b; }
-  .insight-card-recommendation.severity-critical { border-left-color: #ef4444; }
-
-  .insight-icon { font-size: 1.5rem; flex-shrink: 0; width: 2rem; text-align: center; padding-top: 0.1rem; }
-  .insight-body { min-width: 0; }
-  .insight-title { font-weight: 600; font-size: 0.9rem; color: var(--text-primary); margin-bottom: 0.25rem; }
-  .insight-detail { font-size: 0.8rem; color: var(--text-secondary); line-height: 1.4; }
-
-  .insights-refresh-note { margin-top: 1rem; text-align: center; font-size: 0.8rem; color: var(--text-muted); display: flex; align-items: center; justify-content: center; gap: 0.5rem; }
-
-  .insights-empty { border: 2px dashed var(--border-color); border-radius: 8px; padding: 2.5rem 2rem; text-align: center; color: var(--text-secondary); }
-  .insights-empty .btn { margin-top: 0.75rem; }
 </style>

@@ -42,6 +42,7 @@
     parent_id: number | null;
     monthly_budget: number | null;
     created_at: string;
+    exclude_from_budget: boolean;
     path: string;
   }
 
@@ -81,9 +82,15 @@
 
   let scenarios = $state<Scenario[]>([]);
   let categories = $state<CategoryWithPath[]>([]);
+  // Categories excluded from budgets (e.g. internal transfers) never enter the
+  // forecast baselines, so adjusting them does nothing — hide them here.
+  let adjustableCategories = $derived(categories.filter((c) => !c.exclude_from_budget));
   let selectedScenario = $state<Scenario | null>(null);
   let adjustments = $state<ScenarioAdjustmentWithPath[]>([]);
   let defaults = $state<ScenarioDefault | null>(null);
+  // Category IDs excluded from the selected scenario's projection (forecast-only,
+  // independent of the global exclude_from_budget flag).
+  let excludedCategoryIds = $state<number[]>([]);
 
   let loadingScenarios = $state(false);
   let loadingCategories = $state(false);
@@ -156,12 +163,14 @@
     selectedScenario = s;
     loadingAdjustments = true;
     try {
-      const [adj, def] = await Promise.all([
+      const [adj, def, excl] = await Promise.all([
         invoke<ScenarioAdjustmentWithPath[]>("get_scenario_adjustments", { scenarioId: s.id }),
         invoke<ScenarioDefault | null>("get_scenario_defaults", { scenarioId: s.id }),
+        invoke<number[]>("get_scenario_excluded_categories", { scenarioId: s.id }),
       ]);
       adjustments = adj;
       defaults = def;
+      excludedCategoryIds = excl;
     } catch (e) {
       showToast(String(e), "error");
     } finally {
@@ -197,6 +206,7 @@
         selectedScenario = null;
         adjustments = [];
         defaults = null;
+        excludedCategoryIds = [];
       }
       await loadScenarios();
     } catch (e) {
@@ -212,6 +222,20 @@
         categoryId: catId,
         adjustmentPct: pct,
         fixedAmount: fixed,
+      });
+      await selectScenario(selectedScenario);
+    } catch (e) {
+      showToast(String(e), "error");
+    }
+  }
+
+  async function toggleCategoryExclusion(catId: number, include: boolean) {
+    if (!selectedScenario) return;
+    try {
+      await invoke("set_scenario_category_exclusion", {
+        scenarioId: selectedScenario.id,
+        categoryId: catId,
+        excluded: !include,
       });
       await selectScenario(selectedScenario);
     } catch (e) {
@@ -450,13 +474,14 @@
           </div>
           {#if loadingAdjustments}
             <p class="loading">Loading adjustments...</p>
-          {:else if categories.length === 0}
+          {:else if adjustableCategories.length === 0}
             <p class="empty-note">No categories defined.</p>
           {:else}
             <div class="adj-table-wrap">
               <table class="adj-table">
                 <thead>
                   <tr>
+                    <th class="incl-col" title="Include this category in this scenario's forecast">Incl.</th>
                     <th>Category</th>
                     <th class="num-col">% Adj</th>
                     <th class="num-col">Fixed Amount</th>
@@ -464,15 +489,25 @@
                   </tr>
                 </thead>
                 <tbody>
-                  {#each categories as cat (cat.id)}
+                  {#each adjustableCategories as cat (cat.id)}
                     {@const adj = adjustments.find((a) => a.category_id === cat.id)}
-                    <tr>
+                    {@const excluded = excludedCategoryIds.includes(cat.id)}
+                    <tr class:row-excluded={excluded}>
+                      <td class="incl-col">
+                        <input
+                          type="checkbox"
+                          checked={!excluded}
+                          onchange={(e) => toggleCategoryExclusion(cat.id, (e.target as HTMLInputElement).checked)}
+                          title={excluded ? "Excluded from this scenario" : "Included in this scenario"}
+                        />
+                      </td>
                       <td class="cat-cell">{cat.path}</td>
                       <td class="num-col">
                         <input
                           type="number"
                           class="adj-input"
                           value={adj?.adjustment_pct ?? 0}
+                          disabled={excluded}
                           onchange={(e) => {
                             const val = parseFloat((e.target as HTMLInputElement).value) || 0;
                             saveAdjustment(cat.id, val, adj?.fixed_amount ?? null);
@@ -486,6 +521,7 @@
                           class="adj-input"
                           value={adj?.fixed_amount ?? ""}
                           placeholder="auto"
+                          disabled={excluded}
                           onchange={(e) => {
                             const raw = (e.target as HTMLInputElement).value;
                             const val = raw ? parseFloat(raw) : null;
@@ -495,7 +531,9 @@
                         />
                       </td>
                       <td>
-                        {#if adj?.fixed_amount != null}
+                        {#if excluded}
+                          <span class="badge badge-excluded">Excluded</span>
+                        {:else if adj?.fixed_amount != null}
                           <span class="badge badge-fixed">Fixed</span>
                         {:else if (adj?.adjustment_pct ?? 0) !== 0}
                           <span class="badge badge-pct">{adj!.adjustment_pct > 0 ? "+" : ""}{adj!.adjustment_pct}%</span>
@@ -734,10 +772,20 @@
   .btn-delete:hover { background: #dc2626; }
 
   .toast {
-    padding: 0.75rem 1rem;
-    border-radius: 6px;
-    margin-bottom: 1rem;
+    position: fixed;
+    top: 1rem;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 200;
+    padding: 0.75rem 1.25rem;
+    border-radius: 8px;
     font-size: 0.875rem;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+    animation: toast-in 0.2s ease-out;
+  }
+  @keyframes toast-in {
+    from { opacity: 0; transform: translateX(-50%) translateY(-0.5rem); }
+    to { opacity: 1; transform: translateX(-50%) translateY(0); }
   }
   .toast-success { background: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
   .toast-error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
@@ -795,6 +843,8 @@
   .adj-table th { text-align: left; padding: 0.5rem 0.65rem; background: var(--bg-secondary); border-bottom: 1px solid var(--border-color); font-weight: 600; color: var(--text-primary); position: sticky; top: 0; }
   .adj-table td { padding: 0.4rem 0.65rem; border-bottom: 1px solid var(--border-color); }
   .cat-cell { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .incl-col { width: 1%; text-align: center; white-space: nowrap; }
+  .row-excluded .cat-cell { color: var(--text-muted); text-decoration: line-through; }
   .num-col { text-align: right; }
   .adj-input { width: 80px; padding: 0.3rem 0.4rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.8rem; text-align: right; }
 
@@ -802,6 +852,7 @@
   .badge-default { background: var(--bg-secondary); color: var(--text-secondary); }
   .badge-pct { background: #dbeafe; color: #1d4ed8; }
   .badge-fixed { background: #fef3c7; color: #92400e; }
+  .badge-excluded { background: #fee2e2; color: #991b1b; }
 
   .defaults-display { display: flex; flex-direction: column; gap: 0.5rem; }
   .default-item { display: flex; justify-content: space-between; padding: 0.4rem 0; border-bottom: 1px solid var(--border-color); font-size: 0.85rem; }

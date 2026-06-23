@@ -48,6 +48,22 @@ pub struct Transaction {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecurringCost {
+    pub id: i64,
+    pub name: String,
+    pub amount: f64,
+    pub frequency: String,
+    pub category_id: Option<i64>,
+    pub category_name: Option<String>,
+    pub next_due_date: Option<String>,
+    pub active: bool,
+    pub notes: Option<String>,
+    pub created_at: String,
+    /// Normalised to a per-month cost, derived from `amount` and `frequency`.
+    pub monthly_cost: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct SavingsGoal {
     pub id: i64,
@@ -106,12 +122,47 @@ pub struct CategorySpending {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CategorySpendingChild {
+    pub category_id: i64,
+    pub name: String,
+    pub total: f64,
+    pub transaction_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CategorySpendingGroup {
+    /// None for the synthetic "Uncategorised" group.
+    pub category_id: Option<i64>,
+    pub name: String,
+    /// Spend tagged directly to the parent category (not via a child).
+    pub direct_total: f64,
+    /// direct_total plus the sum of all children — what the row shows collapsed.
+    pub total: f64,
+    pub transaction_count: i64,
+    pub children: Vec<CategorySpendingChild>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonthlyTrend {
     pub month: String,
     pub label: String,
     pub income: f64,
     pub expenses: f64,
     pub net: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskResponse {
+    /// Plain-English answer for the user.
+    pub answer: String,
+    /// The read-only SQL the model generated and we executed ("the working").
+    pub sql: String,
+    /// What the query computes, in one line.
+    pub explanation: String,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    /// True if more rows existed than we returned.
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,7 +180,9 @@ pub struct SpendingInsights {
     pub spending_patterns: Vec<InsightItem>,
     pub anomalies: Vec<InsightItem>,
     pub recommendations: Vec<InsightItem>,
+    #[serde(default)]
     pub period_label: String,
+    #[serde(default)]
     pub generated_at: String,
 }
 

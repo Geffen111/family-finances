@@ -11,3 +11,4 @@ pub mod categorise;
 pub mod recurring;
 pub mod goals;
 pub mod export;
+pub mod ask;

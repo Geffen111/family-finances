@@ -4,13 +4,14 @@ use crate::models::{
 };
 use chrono::{Datelike, NaiveDate};
 use sqlx::SqlitePool;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub async fn calculate_forecast(
     pool: &SqlitePool,
     scenario: &Scenario,
     adjustments: &[ScenarioAdjustment],
     defaults: &ScenarioDefault,
+    excluded_category_ids: &HashSet<i64>,
     months_ahead: i64,
 ) -> Result<ForecastResult, String> {
     let baselines = compute_baselines(pool, &scenario.base_start_date, &scenario.base_end_date).await?;
@@ -43,6 +44,13 @@ pub async fn calculate_forecast(
         let mut projected_expenses = 0.0;
 
         for bl in &baselines {
+            // Per-scenario exclusion: drop this category from this projection
+            // only (the global exclude_from_budget filter already ran in
+            // compute_baselines).
+            if excluded_category_ids.contains(&bl.category_id) {
+                continue;
+            }
+
             let amount = if let Some(adj) = adj_map.get(&bl.category_id) {
                 if let Some(fixed) = adj.fixed_amount {
                     fixed
@@ -110,7 +118,8 @@ pub async fn compare_scenarios(
         income_growth_pct: 0.0,
     };
 
-    let base = calculate_forecast(pool, &base_scenario, &base_adjustments, &base_defaults, months_ahead).await?;
+    let base_excluded = HashSet::new();
+    let base = calculate_forecast(pool, &base_scenario, &base_adjustments, &base_defaults, &base_excluded, months_ahead).await?;
 
     let mut scenarios = Vec::new();
     for sid in scenario_ids {
@@ -143,7 +152,17 @@ pub async fn compare_scenarios(
             income_growth_pct: 0.0,
         });
 
-        scenarios.push(calculate_forecast(pool, &scenario, &adjustments, &defaults, months_ahead).await?);
+        let excluded: HashSet<i64> = sqlx::query_scalar::<_, i64>(
+            "SELECT category_id FROM scenario_excluded_categories WHERE scenario_id = ?",
+        )
+        .bind(sid)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("DB error fetching exclusions: {}", e))?
+        .into_iter()
+        .collect();
+
+        scenarios.push(calculate_forecast(pool, &scenario, &adjustments, &defaults, &excluded, months_ahead).await?);
     }
 
     Ok(ForecastComparison {
@@ -163,8 +182,8 @@ async fn compute_baselines(
     let rows = sqlx::query_as::<_, (Option<i64>, String, f64, f64)>(
         "SELECT t.category_id,
                 COALESCE(c.name, 'Uncategorised') as category_name,
-                COALESCE(SUM(t.debit), 0) as total_debit,
-                COALESCE(SUM(t.credit), 0) as total_credit
+                CAST(COALESCE(SUM(t.debit), 0) AS REAL) as total_debit,
+                CAST(COALESCE(SUM(t.credit), 0) AS REAL) as total_credit
          FROM transactions t
          LEFT JOIN categories c ON t.category_id = c.id
          WHERE t.date >= ? AND t.date <= ?

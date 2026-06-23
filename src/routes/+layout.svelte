@@ -27,6 +27,11 @@
         </a>
       </li>
       <li>
+        <a href="/ask" class="nav-item" class:active={$page.url.pathname.startsWith("/ask")}>
+          <span class="nav-icon">💬</span> Ask
+        </a>
+      </li>
+      <li>
         <a href="/categories" class="nav-item" class:active={$page.url.pathname.startsWith("/categories")}>
           <span class="nav-icon">🏷️</span> Categories
         </a>
@@ -39,6 +44,11 @@
       <li>
         <a href="/goals" class="nav-item" class:active={$page.url.pathname.startsWith("/goals")}>
           <span class="nav-icon">🎯</span> Goals
+        </a>
+      </li>
+      <li>
+        <a href="/recurring" class="nav-item" class:active={$page.url.pathname.startsWith("/recurring")}>
+          <span class="nav-icon">🔁</span> Recurring
         </a>
       </li>
       <li>

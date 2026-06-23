@@ -1,7 +1,10 @@
-use crate::models::{CategorySpending, CategoryTrend, DashboardSummary, MonthlyTrend};
+use crate::models::{
+    CategorySpending, CategorySpendingChild, CategorySpendingGroup, CategoryTrend, DashboardSummary,
+    MonthlyTrend,
+};
 use chrono::NaiveDate;
 use sqlx::SqlitePool;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use tauri::State;
 
 // Excludes transactions whose category is flagged out of budgets/totals
@@ -41,7 +44,7 @@ pub async fn get_dashboard_summary(
     start_date: Option<String>,
     end_date: Option<String>,
 ) -> Result<DashboardSummary, String> {
-    let mut base = String::from("SELECT COALESCE(SUM(t.credit), 0) FROM transactions t WHERE 1=1");
+    let mut base = String::from("SELECT CAST(COALESCE(SUM(t.credit), 0) AS REAL) FROM transactions t WHERE 1=1");
     base.push_str(EXCLUDE_BUDGET);
     let params = apply_date_filters(&mut base, &start_date, &end_date, "t");
 
@@ -51,7 +54,7 @@ pub async fn get_dashboard_summary(
     }
     let total_income: f64 = q.fetch_one(&*pool).await.unwrap_or(0.0);
 
-    let mut exp_base = String::from("SELECT COALESCE(SUM(t.debit), 0) FROM transactions t WHERE 1=1");
+    let mut exp_base = String::from("SELECT CAST(COALESCE(SUM(t.debit), 0) AS REAL) FROM transactions t WHERE 1=1");
     exp_base.push_str(EXCLUDE_BUDGET);
     let params2 = apply_date_filters(&mut exp_base, &start_date, &end_date, "t");
     let mut q = sqlx::query_scalar::<_, f64>(&exp_base);
@@ -69,7 +72,7 @@ pub async fn get_dashboard_summary(
     let transaction_count: i64 = q.fetch_one(&*pool).await.unwrap_or(0);
 
     let mut top_base = String::from(
-        "SELECT COALESCE(c.name, 'Uncategorised'), COALESCE(SUM(t.debit), 0) as total
+        "SELECT COALESCE(c.name, 'Uncategorised'), CAST(COALESCE(SUM(t.debit), 0) AS REAL) as total
          FROM transactions t
          LEFT JOIN categories c ON t.category_id = c.id
          WHERE 1=1"
@@ -106,7 +109,7 @@ pub async fn get_spending_by_category(
         "SELECT
             COALESCE(c.name, 'Uncategorised'),
             CASE WHEN cp.name IS NOT NULL THEN cp.name || ' > ' || c.name ELSE COALESCE(c.name, 'Uncategorised') END,
-            COALESCE(SUM(t.debit), 0),
+            CAST(COALESCE(SUM(t.debit), 0) AS REAL),
             COUNT(*)
          FROM transactions t
          LEFT JOIN categories c ON t.category_id = c.id
@@ -145,6 +148,124 @@ pub async fn get_spending_by_category(
     Ok(result)
 }
 
+/// Spending for the period grouped into a parent → child tree. Each parent's
+/// `total` rolls up its own direct spend plus every child's. Assumes the app's
+/// two-level category hierarchy (a category has at most one parent level).
+#[tauri::command]
+pub async fn get_category_spending_tree(
+    pool: State<'_, SqlitePool>,
+    start_date: Option<String>,
+    end_date: Option<String>,
+) -> Result<Vec<CategorySpendingGroup>, String> {
+    // All categories, so we can resolve names/parents even for parents that have
+    // no direct spend of their own in the period.
+    let cats = sqlx::query_as::<_, (i64, String, Option<i64>)>(
+        "SELECT id, name, parent_id FROM categories",
+    )
+    .fetch_all(&*pool)
+    .await
+    .map_err(|e| format!("DB query error: {}", e))?;
+    let cat_map: HashMap<i64, (String, Option<i64>)> =
+        cats.into_iter().map(|(id, name, pid)| (id, (name, pid))).collect();
+
+    // Direct spend per category over the period (one row per category id; the
+    // NULL id row is uncategorised spend).
+    let mut query = String::from(
+        "SELECT t.category_id, CAST(COALESCE(SUM(t.debit), 0) AS REAL), COUNT(*)
+         FROM transactions t
+         WHERE t.debit > 0",
+    );
+    query.push_str(EXCLUDE_BUDGET);
+    let params = apply_date_filters(&mut query, &start_date, &end_date, "t");
+    query.push_str(" GROUP BY t.category_id");
+
+    let mut q = sqlx::query_as::<_, (Option<i64>, f64, i64)>(&query);
+    for p in &params {
+        q = q.bind(p);
+    }
+    let rows = q
+        .fetch_all(&*pool)
+        .await
+        .map_err(|e| format!("DB query error: {}", e))?;
+
+    // Accumulate into top-level groups keyed by the parent category id
+    // (None = uncategorised).
+    let mut groups: HashMap<Option<i64>, CategorySpendingGroup> = HashMap::new();
+
+    for (cid, total, count) in rows {
+        match cid {
+            None => {
+                let g = groups.entry(None).or_insert_with(|| CategorySpendingGroup {
+                    category_id: None,
+                    name: "Uncategorised".to_string(),
+                    direct_total: 0.0,
+                    total: 0.0,
+                    transaction_count: 0,
+                    children: Vec::new(),
+                });
+                g.direct_total += total;
+                g.total += total;
+                g.transaction_count += count;
+            }
+            Some(id) => {
+                let (name, parent_id) = cat_map
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| (format!("Category {}", id), None));
+                match parent_id {
+                    // Child category: roll into its parent group.
+                    Some(pid) => {
+                        let pname = cat_map
+                            .get(&pid)
+                            .map(|(n, _)| n.clone())
+                            .unwrap_or_else(|| format!("Category {}", pid));
+                        let g = groups.entry(Some(pid)).or_insert_with(|| CategorySpendingGroup {
+                            category_id: Some(pid),
+                            name: pname,
+                            direct_total: 0.0,
+                            total: 0.0,
+                            transaction_count: 0,
+                            children: Vec::new(),
+                        });
+                        g.total += total;
+                        g.transaction_count += count;
+                        g.children.push(CategorySpendingChild {
+                            category_id: id,
+                            name,
+                            total,
+                            transaction_count: count,
+                        });
+                    }
+                    // Top-level category with direct spend.
+                    None => {
+                        let g = groups.entry(Some(id)).or_insert_with(|| CategorySpendingGroup {
+                            category_id: Some(id),
+                            name: name.clone(),
+                            direct_total: 0.0,
+                            total: 0.0,
+                            transaction_count: 0,
+                            children: Vec::new(),
+                        });
+                        // Name may already be set from a child; keep the real name.
+                        g.name = name;
+                        g.direct_total += total;
+                        g.total += total;
+                        g.transaction_count += count;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut result: Vec<CategorySpendingGroup> = groups.into_values().collect();
+    for g in &mut result {
+        g.children.sort_by(|a, b| b.total.partial_cmp(&a.total).unwrap_or(std::cmp::Ordering::Equal));
+    }
+    result.sort_by(|a, b| b.total.partial_cmp(&a.total).unwrap_or(std::cmp::Ordering::Equal));
+
+    Ok(result)
+}
+
 #[tauri::command]
 pub async fn get_monthly_trends(
     pool: State<'_, SqlitePool>,
@@ -152,7 +273,7 @@ pub async fn get_monthly_trends(
     end_date: Option<String>,
 ) -> Result<Vec<MonthlyTrend>, String> {
     let mut query = String::from(
-        "SELECT strftime('%Y-%m', t.date), COALESCE(SUM(t.credit), 0), COALESCE(SUM(t.debit), 0)
+        "SELECT strftime('%Y-%m', t.date), CAST(COALESCE(SUM(t.credit), 0) AS REAL), CAST(COALESCE(SUM(t.debit), 0) AS REAL)
          FROM transactions t WHERE 1=1"
     );
     query.push_str(EXCLUDE_BUDGET);
@@ -191,7 +312,7 @@ pub async fn get_spending_trend_by_category(
     category_ids: Option<Vec<i64>>,
 ) -> Result<Vec<CategoryTrend>, String> {
     let mut query = String::from(
-        "SELECT c.id, COALESCE(c.name, 'Uncategorised'), strftime('%Y-%m', t.date), COALESCE(SUM(t.debit), 0)
+        "SELECT c.id, COALESCE(c.name, 'Uncategorised'), strftime('%Y-%m', t.date), CAST(COALESCE(SUM(t.debit), 0) AS REAL)
          FROM transactions t
          LEFT JOIN categories c ON t.category_id = c.id
          WHERE 1=1"
@@ -264,7 +385,7 @@ pub async fn get_budget_status(
     // filter lives inside a correlated subquery so categories with no
     // spending in the period still appear (actual = 0).
     let mut actual = String::from(
-        "COALESCE((SELECT SUM(t.debit) FROM transactions t WHERE t.category_id = c.id",
+        "CAST(COALESCE((SELECT SUM(t.debit) FROM transactions t WHERE t.category_id = c.id",
     );
     let mut params: Vec<String> = Vec::new();
     if let Some(sd) = &start_date {
@@ -275,7 +396,7 @@ pub async fn get_budget_status(
         actual.push_str(" AND t.date <= ?");
         params.push(ed.clone());
     }
-    actual.push_str("), 0)");
+    actual.push_str("), 0) AS REAL)");
 
     let query = format!(
         "SELECT c.id, c.name,

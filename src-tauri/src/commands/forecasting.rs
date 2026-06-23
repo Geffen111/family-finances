@@ -111,6 +111,12 @@ pub async fn delete_scenario(
         .await
         .map_err(|e| format!("DB error deleting defaults: {}", e))?;
 
+    sqlx::query("DELETE FROM scenario_excluded_categories WHERE scenario_id = ?")
+        .bind(id)
+        .execute(&*pool)
+        .await
+        .map_err(|e| format!("DB error deleting exclusions: {}", e))?;
+
     sqlx::query("DELETE FROM scenarios WHERE id = ?")
         .bind(id)
         .execute(&*pool)
@@ -187,6 +193,50 @@ pub async fn get_scenario_adjustments(
             }
         })
         .collect())
+}
+
+#[tauri::command]
+pub async fn get_scenario_excluded_categories(
+    pool: State<'_, SqlitePool>,
+    scenario_id: i64,
+) -> Result<Vec<i64>, String> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT category_id FROM scenario_excluded_categories WHERE scenario_id = ?",
+    )
+    .bind(scenario_id)
+    .fetch_all(&*pool)
+    .await
+    .map_err(|e| format!("DB error fetching exclusions: {}", e))
+}
+
+#[tauri::command]
+pub async fn set_scenario_category_exclusion(
+    pool: State<'_, SqlitePool>,
+    scenario_id: i64,
+    category_id: i64,
+    excluded: bool,
+) -> Result<(), String> {
+    if excluded {
+        sqlx::query(
+            "INSERT INTO scenario_excluded_categories (scenario_id, category_id) \
+             VALUES (?, ?) ON CONFLICT(scenario_id, category_id) DO NOTHING",
+        )
+        .bind(scenario_id)
+        .bind(category_id)
+        .execute(&*pool)
+        .await
+        .map_err(|e| format!("DB error excluding category: {}", e))?;
+    } else {
+        sqlx::query(
+            "DELETE FROM scenario_excluded_categories WHERE scenario_id = ? AND category_id = ?",
+        )
+        .bind(scenario_id)
+        .bind(category_id)
+        .execute(&*pool)
+        .await
+        .map_err(|e| format!("DB error including category: {}", e))?;
+    }
+    Ok(())
 }
 
 #[tauri::command]

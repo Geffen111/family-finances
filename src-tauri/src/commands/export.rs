@@ -53,7 +53,7 @@ pub async fn export_summary_csv(
 ) -> Result<String, String> {
     let mut query = String::from(
         "SELECT COALESCE(c.name, 'Uncategorised') as category_name, \
-         SUM(t.debit) as total, COUNT(*) as transaction_count \
+         CAST(SUM(t.debit) AS REAL) as total, COUNT(*) as transaction_count \
          FROM transactions t \
          LEFT JOIN categories c ON t.category_id = c.id \
          WHERE t.debit > 0"

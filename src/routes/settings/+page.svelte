@@ -296,10 +296,20 @@
   }
   .btn-primary:hover { background: #1d4ed8; }
   .toast {
-    padding: 0.75rem 1rem;
-    border-radius: 6px;
-    margin-bottom: 1rem;
+    position: fixed;
+    top: 1rem;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 200;
+    padding: 0.75rem 1.25rem;
+    border-radius: 8px;
     font-size: 0.875rem;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+    animation: toast-in 0.2s ease-out;
+  }
+  @keyframes toast-in {
+    from { opacity: 0; transform: translateX(-50%) translateY(-0.5rem); }
+    to { opacity: 1; transform: translateX(-50%) translateY(0); }
   }
   .toast-success { background: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
   .toast-error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }

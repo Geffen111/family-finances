@@ -2,11 +2,29 @@
 // expense transactions by merchant and looking for a regular cadence.
 
 use crate::commands::categorise::normalize_desc;
+use crate::models::RecurringCost;
 use chrono::NaiveDate;
 use serde::Serialize;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use tauri::State;
+
+/// Canonical payment frequencies and how many payments they amount to per
+/// calendar month. Used to normalise a recurring cost to a monthly figure.
+/// Keep the labels in sync with the frontend `<select>` options.
+pub fn payments_per_month(frequency: &str) -> f64 {
+    match frequency {
+        "Weekly" => 52.0 / 12.0,
+        "Fortnightly" => 26.0 / 12.0,
+        "Monthly" => 1.0,
+        "Every 2 months" => 0.5,
+        "Quarterly" => 1.0 / 3.0,
+        "Half-yearly" => 1.0 / 6.0,
+        "Yearly" => 1.0 / 12.0,
+        // Unknown cadence: treat as monthly rather than zeroing the cost.
+        _ => 1.0,
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub struct RecurringItem {
@@ -129,4 +147,149 @@ pub async fn get_recurring_transactions(
 
     items.sort_by(|a, b| b.monthly_cost.partial_cmp(&a.monthly_cost).unwrap());
     Ok(items)
+}
+
+// -- Manually managed recurring costs / subscriptions (CRUD) --
+
+type RecurringRow = (
+    i64,            // id
+    String,         // name
+    f64,            // amount
+    String,         // frequency
+    Option<i64>,    // category_id
+    Option<String>, // category_name
+    Option<String>, // next_due_date
+    bool,           // active
+    Option<String>, // notes
+    String,         // created_at
+);
+
+fn row_to_cost(r: RecurringRow) -> RecurringCost {
+    let (id, name, amount, frequency, category_id, category_name, next_due_date, active, notes, created_at) = r;
+    let monthly_cost = amount * payments_per_month(&frequency);
+    RecurringCost {
+        id,
+        name,
+        amount,
+        frequency,
+        category_id,
+        category_name,
+        next_due_date,
+        active,
+        notes,
+        created_at,
+        monthly_cost,
+    }
+}
+
+const SELECT_RECURRING: &str = "SELECT r.id, r.name, r.amount, r.frequency, r.category_id, c.name, \
+     r.next_due_date, r.active, r.notes, r.created_at \
+     FROM recurring_costs r \
+     LEFT JOIN categories c ON r.category_id = c.id";
+
+#[tauri::command]
+pub async fn list_recurring_costs(pool: State<'_, SqlitePool>) -> Result<Vec<RecurringCost>, String> {
+    let rows = sqlx::query_as::<_, RecurringRow>(
+        &format!("{SELECT_RECURRING} ORDER BY r.active DESC, r.name COLLATE NOCASE"),
+    )
+    .fetch_all(&*pool)
+    .await
+    .map_err(|e| format!("DB query error: {}", e))?;
+
+    Ok(rows.into_iter().map(row_to_cost).collect())
+}
+
+#[tauri::command]
+pub async fn create_recurring_cost(
+    pool: State<'_, SqlitePool>,
+    name: String,
+    amount: f64,
+    frequency: String,
+    category_id: Option<i64>,
+    next_due_date: Option<String>,
+    active: Option<bool>,
+    notes: Option<String>,
+) -> Result<RecurringCost, String> {
+    let active = active.unwrap_or(true);
+    sqlx::query(
+        "INSERT INTO recurring_costs (name, amount, frequency, category_id, next_due_date, active, notes) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&name)
+    .bind(amount)
+    .bind(&frequency)
+    .bind(category_id)
+    .bind(&next_due_date)
+    .bind(active)
+    .bind(&notes)
+    .execute(&*pool)
+    .await
+    .map_err(|e| format!("DB insert error: {}", e))?;
+
+    let id = sqlx::query_scalar::<_, i64>("SELECT last_insert_rowid()")
+        .fetch_one(&*pool)
+        .await
+        .map_err(|e| format!("DB error: {}", e))?;
+
+    let row = sqlx::query_as::<_, RecurringRow>(&format!("{SELECT_RECURRING} WHERE r.id = ?"))
+        .bind(id)
+        .fetch_one(&*pool)
+        .await
+        .map_err(|e| format!("DB query error: {}", e))?;
+
+    Ok(row_to_cost(row))
+}
+
+#[tauri::command]
+pub async fn update_recurring_cost(
+    pool: State<'_, SqlitePool>,
+    id: i64,
+    name: String,
+    amount: f64,
+    frequency: String,
+    category_id: Option<i64>,
+    next_due_date: Option<String>,
+    active: Option<bool>,
+    notes: Option<String>,
+) -> Result<RecurringCost, String> {
+    let active = active.unwrap_or(true);
+    let affected = sqlx::query(
+        "UPDATE recurring_costs \
+         SET name = ?, amount = ?, frequency = ?, category_id = ?, next_due_date = ?, active = ?, notes = ? \
+         WHERE id = ?",
+    )
+    .bind(&name)
+    .bind(amount)
+    .bind(&frequency)
+    .bind(category_id)
+    .bind(&next_due_date)
+    .bind(active)
+    .bind(&notes)
+    .bind(id)
+    .execute(&*pool)
+    .await
+    .map_err(|e| format!("DB update error: {}", e))?
+    .rows_affected();
+
+    if affected == 0 {
+        return Err(format!("Recurring cost {} not found", id));
+    }
+
+    let row = sqlx::query_as::<_, RecurringRow>(&format!("{SELECT_RECURRING} WHERE r.id = ?"))
+        .bind(id)
+        .fetch_one(&*pool)
+        .await
+        .map_err(|e| format!("DB query error: {}", e))?;
+
+    Ok(row_to_cost(row))
+}
+
+#[tauri::command]
+pub async fn delete_recurring_cost(pool: State<'_, SqlitePool>, id: i64) -> Result<(), String> {
+    sqlx::query("DELETE FROM recurring_costs WHERE id = ?")
+        .bind(id)
+        .execute(&*pool)
+        .await
+        .map_err(|e| format!("DB delete error: {}", e))?;
+    Ok(())
 }

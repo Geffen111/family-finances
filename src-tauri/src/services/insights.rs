@@ -139,7 +139,7 @@ async fn query_category_totals(
     end: &str,
 ) -> Result<Vec<CategoryTotal>, String> {
     let rows = sqlx::query_as::<_, (String, f64)>(
-        "SELECT COALESCE(c.name, 'Uncategorised') as category, COALESCE(SUM(t.debit), 0) as total
+        "SELECT COALESCE(c.name, 'Uncategorised') as category, CAST(COALESCE(SUM(t.debit), 0) AS REAL) as total
          FROM transactions t
          LEFT JOIN categories c ON t.category_id = c.id
          WHERE t.debit > 0 AND t.date >= ? AND t.date <= ?
@@ -166,7 +166,7 @@ async fn query_monthly_changes(
     let rows = sqlx::query_as::<_, (String, String, f64)>(
         "SELECT COALESCE(c.name, 'Uncategorised') as category,
                 strftime('%Y-%m', t.date) as month,
-                COALESCE(SUM(t.debit), 0) as total
+                CAST(COALESCE(SUM(t.debit), 0) AS REAL) as total
          FROM transactions t
          LEFT JOIN categories c ON t.category_id = c.id
          WHERE t.debit > 0 AND t.date >= ? AND t.date <= ?
@@ -214,7 +214,7 @@ async fn query_top_transactions(
     end: &str,
 ) -> Result<Vec<TopTransaction>, String> {
     let rows = sqlx::query_as::<_, (String, String, f64, Option<String>)>(
-        "SELECT t.date, t.description, t.debit, c.name
+        "SELECT t.date, t.description, CAST(t.debit AS REAL), c.name
          FROM transactions t
          LEFT JOIN categories c ON t.category_id = c.id
          WHERE t.debit > 0 AND t.date >= ? AND t.date <= ?
@@ -240,7 +240,7 @@ async fn query_top_transactions(
 
 async fn query_total_income(pool: &SqlitePool, start: &str, end: &str) -> Result<f64, String> {
     let result: Option<(f64,)> = sqlx::query_as(
-        "SELECT COALESCE(SUM(t.credit), 0) FROM transactions t WHERE t.date >= ? AND t.date <= ?",
+        "SELECT CAST(COALESCE(SUM(t.credit), 0) AS REAL) FROM transactions t WHERE t.date >= ? AND t.date <= ?",
     )
     .bind(start)
     .bind(end)
@@ -253,7 +253,7 @@ async fn query_total_income(pool: &SqlitePool, start: &str, end: &str) -> Result
 
 async fn query_total_expenses(pool: &SqlitePool, start: &str, end: &str) -> Result<f64, String> {
     let result: Option<(f64,)> = sqlx::query_as(
-        "SELECT COALESCE(SUM(t.debit), 0) FROM transactions t WHERE t.date >= ? AND t.date <= ?",
+        "SELECT CAST(COALESCE(SUM(t.debit), 0) AS REAL) FROM transactions t WHERE t.date >= ? AND t.date <= ?",
     )
     .bind(start)
     .bind(end)
@@ -266,7 +266,7 @@ async fn query_total_expenses(pool: &SqlitePool, start: &str, end: &str) -> Resu
 
 async fn query_avg_daily_spending(pool: &SqlitePool, start: &str, end: &str) -> Result<f64, String> {
     let row: Option<(f64, i64)> = sqlx::query_as(
-        "SELECT COALESCE(SUM(t.debit), 0), COUNT(DISTINCT t.date)
+        "SELECT CAST(COALESCE(SUM(t.debit), 0) AS REAL), COUNT(DISTINCT t.date)
          FROM transactions t WHERE t.debit > 0 AND t.date >= ? AND t.date <= ?",
     )
     .bind(start)
