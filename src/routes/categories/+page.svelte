@@ -576,7 +576,7 @@
   }
 
   .budgets-section { margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border-color); }
-  .budgets-section h2 { font-size: 1.25rem; font-weight: 700; margin-bottom: 1rem; }
+  .budgets-section h2 { font-size: 1.25rem; font-weight: 700; margin-bottom: 1rem; color: var(--text-primary); }
   .budget-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
   .budget-item {
     background: var(--bg-card);

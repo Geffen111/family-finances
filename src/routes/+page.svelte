@@ -80,8 +80,8 @@
   let loading = $state(true);
   let error = $state("");
 
-  type DatePreset = "thisMonth" | "lastMonth" | "last3Months" | "ytd" | "all";
-  let activePreset = $state<DatePreset>("lastMonth");
+  type DatePreset = "thisMonth" | "lastMonth" | "last3Months" | "last6Months" | "last24Months" | "ytd" | "all";
+  let activePreset = $state<DatePreset>("last6Months");
   let customStart = $state("");
   let customEnd = $state("");
   let showCustom = $state(false);
@@ -127,6 +127,10 @@
       }
       case "last3Months":
         return { start: format(startOfMonth(subMonths(today, 2)), "yyyy-MM-dd"), end: "" };
+      case "last6Months":
+        return { start: format(startOfMonth(subMonths(today, 5)), "yyyy-MM-dd"), end: "" };
+      case "last24Months":
+        return { start: format(startOfMonth(subMonths(today, 23)), "yyyy-MM-dd"), end: "" };
       case "ytd":
         return { start: format(startOfYear(today), "yyyy-MM-dd"), end: "" };
       case "all":
@@ -506,6 +510,8 @@
         <button class="preset-btn" class:active={!showCustom && activePreset === "thisMonth"} onclick={() => setPreset("thisMonth")}>This Month</button>
         <button class="preset-btn" class:active={!showCustom && activePreset === "lastMonth"} onclick={() => setPreset("lastMonth")}>Last</button>
         <button class="preset-btn" class:active={!showCustom && activePreset === "last3Months"} onclick={() => setPreset("last3Months")}>3M</button>
+        <button class="preset-btn" class:active={!showCustom && activePreset === "last6Months"} onclick={() => setPreset("last6Months")}>6M</button>
+        <button class="preset-btn" class:active={!showCustom && activePreset === "last24Months"} onclick={() => setPreset("last24Months")}>24M</button>
         <button class="preset-btn" class:active={!showCustom && activePreset === "ytd"} onclick={() => setPreset("ytd")}>YTD</button>
         <button class="preset-btn" class:active={!showCustom && activePreset === "all"} onclick={() => setPreset("all")}>All</button>
         <button class="preset-btn" class:active={showCustom} onclick={() => { showCustom = !showCustom; if (!showCustom) fetchData(); }}>Custom</button>
