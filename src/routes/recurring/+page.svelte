@@ -253,26 +253,26 @@
   .subtitle { margin-top: 0.25rem; font-size: 0.9rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
   h2 { font-size: 1.25rem; font-weight: 600; margin-bottom: 1rem; color: var(--text-primary); }
 
-  .btn { padding: 0.5rem 1rem; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-card); color: var(--text-primary); font-size: 0.875rem; cursor: pointer; transition: background 0.15s; }
+  .btn { padding: 0.5rem 1rem; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-card); color: var(--text-primary); font-size: 0.875rem; cursor: pointer; transition: background 0.15s; }
   .btn:hover { background: var(--bg-secondary); }
   .btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn-sm { padding: 0.3rem 0.65rem; font-size: 0.8rem; }
-  .btn-primary { background: #2563eb; color: #fff; border-color: #2563eb; }
-  .btn-primary:hover { background: #1d4ed8; }
-  .btn-danger { background: #ef4444; color: #fff; border-color: #ef4444; }
-  .btn-danger:hover { background: #dc2626; }
+  .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn-primary:hover { background: var(--accent); }
+  .btn-danger { background: var(--neg); color: #fff; border-color: var(--neg); }
+  .btn-danger:hover { background: var(--neg); }
 
-  .toast { position: fixed; top: 1rem; left: 50%; transform: translateX(-50%); z-index: 200; padding: 0.75rem 1.25rem; border-radius: 8px; font-size: 0.875rem; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15); animation: toast-in 0.2s ease-out; }
+  .toast { position: fixed; top: 1rem; left: 50%; transform: translateX(-50%); z-index: 200; padding: 0.75rem 1.25rem; border-radius: 14px; font-size: 0.875rem; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15); animation: toast-in 0.2s ease-out; }
   @keyframes toast-in { from { opacity: 0; transform: translateX(-50%) translateY(-0.5rem); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
   .toast-success { background: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
   .toast-error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
 
   .loading { color: var(--text-secondary); padding: 2rem 0; }
-  .empty-state { border: 2px dashed var(--border-color); border-radius: 12px; padding: 3rem 2rem; text-align: center; color: var(--text-secondary); }
+  .empty-state { border: 2px dashed var(--border-color); border-radius: var(--radius-card); padding: 3rem 2rem; text-align: center; color: var(--text-secondary); }
   .empty-state .btn { margin-top: 1rem; }
 
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1.25rem; }
-  .card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.25rem; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+  .card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-card); padding: 1.25rem; box-shadow: var(--app-shadow); }
   .card.inactive { opacity: 0.6; }
   .card-top { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
   .card-name { font-size: 1.05rem; font-weight: 700; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -289,11 +289,11 @@
   .card-notes { margin-top: 0.6rem; font-size: 0.78rem; color: var(--text-secondary); }
 
   .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
-  .modal { background: var(--bg-card); border-radius: 12px; padding: 1.5rem; width: 420px; max-width: 90vw; max-height: 90vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.15); }
+  .modal { background: var(--bg-card); border-radius: var(--radius-card); padding: 1.5rem; width: 420px; max-width: 90vw; max-height: 90vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.15); }
   .modal-sm { width: 360px; }
   .modal label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.85rem; font-weight: 500; color: var(--text-primary); margin-bottom: 0.75rem; }
   .modal label.checkbox { flex-direction: row; align-items: center; gap: 0.5rem; }
-  .modal input, .modal select { padding: 0.5rem 0.65rem; border: 1px solid var(--border-color); border-radius: 6px; font-size: 0.9rem; background: var(--bg-card); color: var(--text-primary); }
+  .modal input, .modal select { padding: 0.5rem 0.65rem; border: 1px solid var(--border-color); border-radius: 10px; font-size: 0.9rem; background: var(--bg-card); color: var(--text-primary); }
   .modal label.checkbox input { width: auto; }
   .modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.25rem; }
 </style>

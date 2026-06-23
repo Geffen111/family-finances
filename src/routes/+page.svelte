@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { format, startOfMonth, endOfMonth, subMonths, startOfYear } from "date-fns";
   import { onMount } from "svelte";
+  import { darkMode } from "$lib/stores/theme.svelte";
 
   interface DashboardSummary {
     total_income: number;
@@ -95,7 +96,25 @@
   let barChart: ChartType | null = null;
   let lineChart: ChartType | null = null;
 
-  const CHART_COLORS = ["#3b82f6", "#ef4444", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#14b8a6", "#f97316"];
+  // Read Hearth theme tokens off a live element so charts follow light/dark mode.
+  function themeVar(name: string, fallback = ""): string {
+    if (typeof document === "undefined") return fallback;
+    const el = document.querySelector(".app-layout") ?? document.documentElement;
+    const v = getComputedStyle(el).getPropertyValue(name).trim();
+    return v || fallback;
+  }
+  function chartSeries(): string[] {
+    return ["--c1", "--c2", "--c3", "--c4", "--c5", "--c6"].map((n) => themeVar(n, "#7f9a6f"));
+  }
+  // hex (#rgb/#rrggbb) → rgba string with given alpha
+  function withAlpha(hex: string, alpha: number): string {
+    const h = hex.replace("#", "");
+    const f = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+    const r = parseInt(f.slice(0, 2), 16);
+    const g = parseInt(f.slice(2, 4), 16);
+    const b = parseInt(f.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
 
   function getDateRange(preset: DatePreset): { start: string; end: string } {
     const today = new Date();
@@ -199,11 +218,14 @@
 
   $effect(() => {
     if (loading || !doughnutData) return;
+    const dark = $darkMode; // track theme so the chart recolors on toggle
     (async () => {
+      void dark;
       const { default: Chart } = await import("chart.js/auto");
       const canvas = document.getElementById("doughnutChart") as HTMLCanvasElement | null;
       if (!canvas) return;
       if (doughnutChart) doughnutChart.destroy();
+      const series = chartSeries();
       const total = doughnutData.data.reduce((a, b) => a + b, 0);
       doughnutChart = new Chart(canvas, {
         type: "doughnut",
@@ -211,15 +233,17 @@
           labels: doughnutData.labels,
           datasets: [{
             data: doughnutData.data,
-            backgroundColor: CHART_COLORS.slice(0, doughnutData.labels.length),
-            borderWidth: 1,
+            backgroundColor: doughnutData.labels.map((_, i) => series[i % series.length]),
+            borderColor: themeVar("--bg-card", "#fff"),
+            borderWidth: 2,
           }],
         },
         options: {
           responsive: true,
           maintainAspectRatio: true,
+          cutout: "62%",
           plugins: {
-            legend: { position: "bottom" },
+            legend: { position: "bottom", labels: { color: themeVar("--text-secondary", "#7b7468"), usePointStyle: true, pointStyle: "circle", boxWidth: 8 } },
             tooltip: {
               callbacks: {
                 label: (ctx: any) => {
@@ -237,11 +261,18 @@
 
   $effect(() => {
     if (loading || monthlyTrends.length === 0) return;
+    const dark = $darkMode;
     (async () => {
+      void dark;
       const { default: Chart } = await import("chart.js/auto");
       const canvas = document.getElementById("barChart") as HTMLCanvasElement | null;
       if (!canvas) return;
       if (barChart) barChart.destroy();
+      const pos = themeVar("--pos", "#6f9466");
+      const neg = themeVar("--neg", "#c77a5a");
+      const accent = themeVar("--accent", "#7f9a6f");
+      const grid = themeVar("--border-color", "#ece0cc");
+      const tick = themeVar("--text-muted", "#a89f90");
       const labels = monthlyTrends.map((m) => m.label);
       barChart = new Chart(canvas, {
         type: "bar",
@@ -251,26 +282,33 @@
             {
               label: "Income",
               data: monthlyTrends.map((m) => m.income),
-              backgroundColor: "rgba(16, 185, 129, 0.7)",
-              borderColor: "#10b981",
-              borderWidth: 1,
+              backgroundColor: pos,
+              borderWidth: 0,
+              borderRadius: 5,
+              borderSkipped: false,
+              barPercentage: 0.6,
+              categoryPercentage: 0.6,
             },
             {
               label: "Expenses",
               data: monthlyTrends.map((m) => m.expenses),
-              backgroundColor: "rgba(239, 68, 68, 0.7)",
-              borderColor: "#ef4444",
-              borderWidth: 1,
+              backgroundColor: neg,
+              borderWidth: 0,
+              borderRadius: 5,
+              borderSkipped: false,
+              barPercentage: 0.6,
+              categoryPercentage: 0.6,
             },
             {
               label: "Net",
               data: monthlyTrends.map((m) => m.net),
               type: "line",
-              borderColor: "#3b82f6",
+              borderColor: accent,
               backgroundColor: "transparent",
               borderWidth: 2,
-              pointBackgroundColor: "#3b82f6",
-              tension: 0.3,
+              pointBackgroundColor: accent,
+              pointRadius: 3,
+              tension: 0.35,
             },
           ],
         },
@@ -281,11 +319,14 @@
           scales: {
             y: {
               beginAtZero: true,
-              ticks: { callback: (v: any) => fmt(v) },
+              border: { display: false },
+              grid: { color: grid },
+              ticks: { color: tick, callback: (v: any) => fmt(v) },
             },
+            x: { border: { display: false }, grid: { display: false }, ticks: { color: tick } },
           },
           plugins: {
-            legend: { position: "bottom" },
+            legend: { position: "bottom", labels: { color: themeVar("--text-secondary", "#7b7468"), usePointStyle: true, pointStyle: "circle", boxWidth: 8 } },
             tooltip: {
               callbacks: {
                 label: (ctx: any) => `${ctx.dataset.label}: ${fmt(ctx.parsed.y ?? ctx.parsed)}`,
@@ -303,11 +344,16 @@
     // dropdown (or underlying data) changes — anything read only after the
     // `await` below would not be tracked as a dependency.
     const filtered = getFilteredTrends();
+    const dark = $darkMode;
     (async () => {
+      void dark;
       const { default: Chart } = await import("chart.js/auto");
       const canvas = document.getElementById("lineChart") as HTMLCanvasElement | null;
       if (!canvas) return;
       if (lineChart) lineChart.destroy();
+      const series = chartSeries();
+      const grid = themeVar("--border-color", "#ece0cc");
+      const tick = themeVar("--text-muted", "#a89f90");
 
       const monthSet = new Set(filtered.map((ct) => ct.label));
       const labels = [...monthSet].sort();
@@ -325,11 +371,11 @@
         datasets.push({
           label: name,
           data: labels.map((l) => g.data.get(l) ?? 0),
-          borderColor: CHART_COLORS[ci % CHART_COLORS.length],
-          backgroundColor: CHART_COLORS[ci % CHART_COLORS.length] + "22",
+          borderColor: series[ci % series.length],
+          backgroundColor: withAlpha(series[ci % series.length], 0.13),
           borderWidth: 2,
           pointRadius: 3,
-          tension: 0.3,
+          tension: 0.35,
           fill: false,
         });
         ci++;
@@ -345,11 +391,14 @@
           scales: {
             y: {
               beginAtZero: true,
-              ticks: { callback: (v: any) => fmt(v) },
+              border: { display: false },
+              grid: { color: grid },
+              ticks: { color: tick, callback: (v: any) => fmt(v) },
             },
+            x: { border: { display: false }, grid: { display: false }, ticks: { color: tick } },
           },
           plugins: {
-            legend: { position: "bottom" },
+            legend: { position: "bottom", labels: { color: themeVar("--text-secondary", "#7b7468"), usePointStyle: true, pointStyle: "circle", boxWidth: 8 } },
             tooltip: {
               callbacks: {
                 label: (ctx: any) => `${ctx.dataset.label}: ${fmt(ctx.parsed.y ?? ctx.parsed)}`,
@@ -383,11 +432,24 @@
 
   $effect(() => {
     if (netWorth.length === 0) return;
+    const dark = $darkMode;
     (async () => {
+      void dark;
       const { default: Chart } = await import("chart.js/auto");
       const canvas = document.getElementById("netWorthChart") as HTMLCanvasElement | null;
       if (!canvas) return;
       if (netWorthChart) netWorthChart.destroy();
+      const accent = themeVar("--accent", "#7f9a6f");
+      const grid = themeVar("--border-color", "#ece0cc");
+      const tick = themeVar("--text-muted", "#a89f90");
+      const ctx2d = canvas.getContext("2d");
+      let fill: string | CanvasGradient = withAlpha(accent, 0.16);
+      if (ctx2d) {
+        const grad = ctx2d.createLinearGradient(0, 0, 0, canvas.height || 300);
+        grad.addColorStop(0, withAlpha(accent, 0.18));
+        grad.addColorStop(1, withAlpha(accent, 0));
+        fill = grad;
+      }
       netWorthChart = new Chart(canvas, {
         type: "line",
         data: {
@@ -395,11 +457,11 @@
           datasets: [{
             label: "Net Worth",
             data: netWorth.map((p) => p.net_worth),
-            borderColor: "#2563eb",
-            backgroundColor: "rgba(37, 99, 235, 0.12)",
-            borderWidth: 2,
+            borderColor: accent,
+            backgroundColor: fill,
+            borderWidth: 2.5,
             pointRadius: 0,
-            tension: 0.25,
+            tension: 0.35,
             fill: true,
           }],
         },
@@ -407,7 +469,10 @@
           responsive: true,
           maintainAspectRatio: true,
           interaction: { intersect: false, mode: "index" },
-          scales: { y: { ticks: { callback: (v: any) => fmt(v) } } },
+          scales: {
+            y: { border: { display: false }, grid: { color: grid }, ticks: { color: tick, callback: (v: any) => fmt(v) } },
+            x: { border: { display: false }, grid: { display: false }, ticks: { color: tick } },
+          },
           plugins: {
             legend: { display: false },
             tooltip: { callbacks: { label: (ctx: any) => `Net worth: ${fmt(ctx.parsed.y ?? ctx.parsed)}` } },
@@ -431,24 +496,28 @@
 </script>
 
 <div class="page">
-  <h1>Dashboard</h1>
-
-  <div class="filter-bar">
-    <button class="preset-btn" class:active={!showCustom && activePreset === "thisMonth"} onclick={() => setPreset("thisMonth")}>This Month</button>
-    <button class="preset-btn" class:active={!showCustom && activePreset === "lastMonth"} onclick={() => setPreset("lastMonth")}>Last Month</button>
-    <button class="preset-btn" class:active={!showCustom && activePreset === "last3Months"} onclick={() => setPreset("last3Months")}>Last 3 Months</button>
-    <button class="preset-btn" class:active={!showCustom && activePreset === "ytd"} onclick={() => setPreset("ytd")}>Year to Date</button>
-    <button class="preset-btn" class:active={!showCustom && activePreset === "all"} onclick={() => setPreset("all")}>All Time</button>
-    <button class="preset-btn" class:active={showCustom} onclick={() => { showCustom = !showCustom; if (!showCustom) fetchData(); }}>
-      Custom
-    </button>
-    {#if showCustom}
-      <div class="custom-dates">
-        <label>From <input type="date" bind:value={customStart} /></label>
-        <label>To <input type="date" bind:value={customEnd} /></label>
-        <button class="btn btn-sm" onclick={applyCustom}>Apply</button>
+  <div class="page-header">
+    <div>
+      <h1>Welcome back</h1>
+      <p class="page-subtitle">Here's how the household is tracking</p>
+    </div>
+    <div class="filter-bar">
+      <div class="period-switch">
+        <button class="preset-btn" class:active={!showCustom && activePreset === "thisMonth"} onclick={() => setPreset("thisMonth")}>This Month</button>
+        <button class="preset-btn" class:active={!showCustom && activePreset === "lastMonth"} onclick={() => setPreset("lastMonth")}>Last</button>
+        <button class="preset-btn" class:active={!showCustom && activePreset === "last3Months"} onclick={() => setPreset("last3Months")}>3M</button>
+        <button class="preset-btn" class:active={!showCustom && activePreset === "ytd"} onclick={() => setPreset("ytd")}>YTD</button>
+        <button class="preset-btn" class:active={!showCustom && activePreset === "all"} onclick={() => setPreset("all")}>All</button>
+        <button class="preset-btn" class:active={showCustom} onclick={() => { showCustom = !showCustom; if (!showCustom) fetchData(); }}>Custom</button>
       </div>
-    {/if}
+      {#if showCustom}
+        <div class="custom-dates">
+          <label>From <input type="date" bind:value={customStart} /></label>
+          <label>To <input type="date" bind:value={customEnd} /></label>
+          <button class="btn btn-sm" onclick={applyCustom}>Apply</button>
+        </div>
+      {/if}
+    </div>
   </div>
 
   {#if loading}
@@ -625,85 +694,95 @@
 
 <style>
   .page { max-width: 1320px; margin: 0 auto; }
-  h1 { font-size: 1.75rem; font-weight: 700; color: var(--text-primary); margin-bottom: 1.25rem; }
+  h1 { font-size: 28px; color: var(--text-primary); }
+  .page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1.75rem; flex-wrap: wrap; }
+  .page-subtitle { font-size: 0.9rem; color: var(--text-secondary); margin-top: 0.25rem; }
 
   .filter-bar {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    margin-bottom: 1.5rem;
+    gap: 0.75rem;
     flex-wrap: wrap;
   }
-  .preset-btn {
-    padding: 0.4rem 0.85rem;
+  .period-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px;
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+    border-radius: var(--radius-pill);
     background: var(--bg-card);
-    color: var(--text-primary);
-    font-size: 0.8rem;
-    cursor: pointer;
-    transition: background 0.15s, border-color 0.15s;
   }
-  .preset-btn:hover { background: var(--bg-secondary); }
-  .preset-btn.active { background: #2563eb; color: var(--bg-card); border-color: #2563eb; }
+  .preset-btn {
+    padding: 6px 13px;
+    border: none;
+    border-radius: var(--radius-pill);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .preset-btn:hover { color: var(--text-primary); }
+  .preset-btn.active { background: var(--accent); color: #fff; }
   .custom-dates { display: flex; align-items: center; gap: 0.5rem; }
   .custom-dates label { font-size: 0.8rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.3rem; }
   .custom-dates input[type="date"] { padding: 0.3rem 0.5rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.8rem; }
 
   .btn {
-    padding: 0.5rem 1rem;
+    padding: 0.5rem 1.1rem;
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+    border-radius: var(--radius-pill);
     background: var(--bg-card);
     color: var(--text-primary);
     font-size: 0.875rem;
+    font-weight: 600;
     cursor: pointer;
   }
   .btn:hover { background: var(--bg-secondary); }
-  .btn-sm { padding: 0.3rem 0.65rem; font-size: 0.8rem; }
-  .btn-primary { background: #2563eb; color: var(--bg-card); border-color: #2563eb; }
-  .btn-primary:hover { background: #1d4ed8; }
+  .btn-sm { padding: 0.35rem 0.85rem; font-size: 0.8rem; }
+  .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn-primary:hover { filter: brightness(0.95); background: var(--accent); }
 
   .loading-grid { display: flex; flex-direction: column; gap: 1.5rem; }
-  .skeleton-card { background: var(--bg-card); border: 1px solid #e5e7eb; border-radius: 8px; padding: 1.25rem; }
-  .skeleton-line { background: #e5e7eb; border-radius: 4px; animation: pulse 1.5s infinite; }
+  .skeleton-card { background: var(--bg-card); border: 1px solid var(--track); border-radius: 14px; padding: 1.25rem; }
+  .skeleton-line { background: var(--track); border-radius: 4px; animation: pulse 1.5s infinite; }
   .skeleton-line-sm { width: 60%; height: 0.75rem; margin-bottom: 0.5rem; }
   .skeleton-line-md { width: 40%; height: 1rem; }
   .skeleton-line-lg { width: 80%; height: 1.5rem; }
-  .skeleton-block { width: 100%; height: 200px; background: #f3f4f6; border-radius: 4px; animation: pulse 1.5s infinite; }
+  .skeleton-block { width: 100%; height: 200px; background: var(--bg-secondary); border-radius: 4px; animation: pulse 1.5s infinite; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-  .error-state { text-align: center; padding: 3rem 2rem; color: #991b1b; background: #fee2e2; border: 1px solid #fecaca; border-radius: 8px; }
+  .error-state { text-align: center; padding: 3rem 2rem; color: #991b1b; background: #fee2e2; border: 1px solid #fecaca; border-radius: 14px; }
   .error-detail { font-size: 0.8rem; color: var(--text-secondary); margin: 0.5rem 0 1rem; word-break: break-all; }
-  .empty-state { border: 2px dashed var(--border-color); border-radius: 8px; padding: 3rem 2rem; text-align: center; color: var(--text-secondary); font-size: 1rem; }
+  .empty-state { border: 2px dashed var(--border-color); border-radius: 14px; padding: 3rem 2rem; text-align: center; color: var(--text-secondary); font-size: 1rem; }
   .empty-state .btn { margin-top: 1rem; }
 
-  .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.25rem; margin-bottom: 2rem; }
-  .card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.25rem 1.35rem; display: flex; flex-direction: column; gap: 0.6rem; box-shadow: 0 1px 2px rgba(0,0,0,0.04); transition: box-shadow 0.15s, transform 0.15s; }
-  .card:hover { box-shadow: 0 4px 14px rgba(0,0,0,0.07); transform: translateY(-1px); }
+  .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.25rem; margin-bottom: 1.5rem; }
+  .card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-card); padding: 1.25rem 1.4rem; display: flex; flex-direction: column; gap: 0.7rem; box-shadow: var(--app-shadow); transition: box-shadow 0.15s, transform 0.15s; }
+  .card:hover { transform: translateY(-1px); }
   .card-top { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
-  .card-icon { font-size: 1.1rem; width: 2.1rem; height: 2.1rem; display: flex; align-items: center; justify-content: center; border-radius: 8px; flex-shrink: 0; }
-  .card-icon-income { background: #d1fae5; }
-  .card-icon-expenses { background: #fee2e2; }
-  .card-icon-top { background: #fef3c7; }
-  .card-label { font-size: 0.72rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
-  .card-value { font-size: 1.6rem; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text-primary); line-height: 1.1; }
-  .card-value-sm { font-size: 1.05rem; line-height: 1.25; }
+  .card-icon { font-size: 0.95rem; width: 2.2rem; height: 2.2rem; display: flex; align-items: center; justify-content: center; border-radius: 50%; flex-shrink: 0; background: var(--accent-soft); }
+  .card-icon-income, .card-icon-expenses, .card-icon-top { background: var(--accent-soft); }
+  .card-label { font-size: 0.78rem; color: var(--text-secondary); font-weight: 600; }
+  .card-value { font-family: "Bitter", Georgia, serif; font-size: 1.7rem; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text-primary); line-height: 1.1; letter-spacing: -0.01em; }
+  .card-value-sm { font-size: 1.1rem; line-height: 1.25; }
   .card-sub-value { font-size: 0.9rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-  .card-income { color: #16a34a; }
-  .card-expenses { color: #dc2626; }
+  .card-income { color: var(--pos); }
+  .card-expenses { color: var(--neg); }
 
   .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.25rem; }
-  .chart-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+  .chart-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-card); padding: 1.5rem; box-shadow: var(--app-shadow); }
   .chart-card-wide { grid-column: 1 / -1; }
-  .chart-card h3 { font-size: 1rem; font-weight: 600; color: var(--text-primary); margin-bottom: 1rem; }
+  .chart-card h3 { font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: 1rem; }
   .chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
   .chart-header h3 { margin-bottom: 0; }
-  .trend-select { padding: 0.35rem 0.5rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.8rem; background: var(--bg-card); color: var(--text-primary); }
+  .trend-select { padding: 0.4rem 0.7rem; border: 1px solid var(--border-color); border-radius: var(--radius-pill); font-size: 0.8rem; background: var(--bg-card); color: var(--text-primary); }
   .chart-wrap { position: relative; width: 100%; max-height: 350px; display: flex; justify-content: center; }
   .chart-wrap canvas { max-width: 100%; max-height: 350px; }
 
-  .cat-table-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 1.5rem; box-shadow: 0 1px 2px rgba(0,0,0,0.04); margin-top: 1.25rem; }
+  .cat-table-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-card); padding: 1.5rem; box-shadow: var(--app-shadow); margin-top: 1.25rem; }
   .cat-table-card h3 { font-size: 1rem; font-weight: 600; color: var(--text-primary); margin-bottom: 0; }
   .cat-table-total { font-size: 1.1rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
   .cat-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
@@ -728,10 +807,10 @@
   .recurring-total { font-size: 1.35rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
   .recurring-total-label { font-size: 0.85rem; font-weight: 500; color: var(--text-secondary); }
   .recurring-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1rem; }
-  .recurring-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 1rem 1.1rem; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+  .recurring-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-card); padding: 1rem 1.1rem; box-shadow: var(--app-shadow); }
   .recurring-card-top { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; margin-bottom: 0.5rem; }
   .recurring-desc { font-size: 0.88rem; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .recurring-freq { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; color: var(--text-secondary); background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 4px; padding: 0.1rem 0.4rem; white-space: nowrap; }
+  .recurring-freq { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; color: var(--text-secondary); background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-pill); padding: 0.15rem 0.55rem; white-space: nowrap; }
   .recurring-card-bottom { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; }
   .recurring-amount { font-size: 1.1rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
   .recurring-per { font-size: 0.75rem; font-weight: 500; color: var(--text-secondary); }

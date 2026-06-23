@@ -241,10 +241,10 @@
   .setting-card {
     background: var(--bg-card);
     border: 1px solid var(--border-color);
-    border-radius: 12px;
+    border-radius: var(--radius-card);
     padding: 1.5rem;
     margin-bottom: 1rem;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    box-shadow: var(--app-shadow);
   }
   label {
     display: block;
@@ -261,7 +261,7 @@
     width: 100%;
     padding: 0.625rem 0.75rem;
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+    border-radius: 10px;
     font-size: 0.95rem;
     box-sizing: border-box;
     background: var(--bg-card);
@@ -269,7 +269,7 @@
   }
   input:focus {
     outline: none;
-    border-color: #3b82f6;
+    border-color: var(--accent);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
   }
   .btn-row {
@@ -280,7 +280,7 @@
   .btn {
     padding: 0.5rem 1rem;
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+    border-radius: 10px;
     background: var(--bg-card);
     color: var(--text-primary);
     font-size: 0.875rem;
@@ -290,11 +290,11 @@
   .btn:hover { background: var(--bg-secondary); }
   .btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn-primary {
-    background: #2563eb;
+    background: var(--accent);
     color: #fff;
-    border-color: #2563eb;
+    border-color: var(--accent);
   }
-  .btn-primary:hover { background: #1d4ed8; }
+  .btn-primary:hover { background: var(--accent); }
   .toast {
     position: fixed;
     top: 1rem;
@@ -302,7 +302,7 @@
     transform: translateX(-50%);
     z-index: 200;
     padding: 0.75rem 1.25rem;
-    border-radius: 8px;
+    border-radius: 14px;
     font-size: 0.875rem;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
     animation: toast-in 0.2s ease-out;

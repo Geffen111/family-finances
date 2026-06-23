@@ -80,9 +80,9 @@
   }
 
   function budgetColor(pct: number): string {
-    if (pct >= 100) return "#dc2626";
-    if (pct >= 80) return "#d97706";
-    return "#16a34a";
+    if (pct >= 100) return "var(--neg)";
+    if (pct >= 80) return "var(--amber)";
+    return "var(--pos)";
   }
 
   function showToast(msg: string, type: "success" | "error") {
@@ -393,7 +393,7 @@
   .btn {
     padding: 0.5rem 1rem;
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+    border-radius: 10px;
     background: var(--bg-card);
     color: var(--text-primary);
     font-size: 0.875rem;
@@ -403,18 +403,18 @@
   .btn:hover { background: var(--bg-secondary); }
   .btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn-sm { padding: 0.3rem 0.65rem; font-size: 0.8rem; }
-  .btn-import { background: #2563eb; color: #fff; border-color: #2563eb; }
-  .btn-import:hover { background: #1d4ed8; }
-  .btn-add { background: #059669; color: #fff; border-color: #059669; }
+  .btn-import { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn-import:hover { background: var(--accent); }
+  .btn-add { background: var(--accent); color: #fff; border-color: var(--accent); }
   .btn-add:hover { background: #047857; }
-  .btn-edit { background: #f59e0b; color: #fff; border-color: #f59e0b; }
-  .btn-edit:hover { background: #d97706; }
-  .btn-delete { background: #ef4444; color: #fff; border-color: #ef4444; }
-  .btn-delete:hover { background: #dc2626; }
-  .btn-primary { background: #2563eb; color: #fff; border-color: #2563eb; }
-  .btn-primary:hover { background: #1d4ed8; }
-  .btn-danger { background: #ef4444; color: #fff; border-color: #ef4444; }
-  .btn-danger:hover { background: #dc2626; }
+  .btn-edit { background: var(--amber); color: #fff; border-color: var(--amber); }
+  .btn-edit:hover { background: var(--amber); }
+  .btn-delete { background: var(--neg); color: #fff; border-color: var(--neg); }
+  .btn-delete:hover { background: var(--neg); }
+  .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn-primary:hover { background: var(--accent); }
+  .btn-danger { background: var(--neg); color: #fff; border-color: var(--neg); }
+  .btn-danger:hover { background: var(--neg); }
 
   .toast {
     position: fixed;
@@ -423,7 +423,7 @@
     transform: translateX(-50%);
     z-index: 200;
     padding: 0.75rem 1.25rem;
-    border-radius: 8px;
+    border-radius: 14px;
     font-size: 0.875rem;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
     animation: toast-in 0.2s ease-out;
@@ -439,7 +439,7 @@
 
   .empty-state {
     border: 2px dashed var(--border-color);
-    border-radius: 8px;
+    border-radius: 14px;
     padding: 3rem 2rem;
     text-align: center;
     color: var(--text-secondary);
@@ -457,7 +457,7 @@
     align-items: center;
     padding: 0.75rem 1rem;
     background: var(--bg-secondary);
-    border-radius: 6px;
+    border-radius: 10px;
     margin-bottom: 0.25rem;
     font-weight: 600;
     color: var(--text-primary);
@@ -511,7 +511,7 @@
 
   .modal {
     background: var(--bg-card);
-    border-radius: 10px;
+    border-radius: 14px;
     padding: 1.5rem;
     width: 420px;
     max-width: 90vw;
@@ -535,7 +535,7 @@
   .modal input, .modal select {
     padding: 0.5rem 0.65rem;
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+    border-radius: 10px;
     font-size: 0.9rem;
   }
 
@@ -581,9 +581,9 @@
   .budget-item {
     background: var(--bg-card);
     border: 1px solid var(--border-color);
-    border-radius: 12px;
+    border-radius: var(--radius-card);
     padding: 0.9rem 1rem;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    box-shadow: var(--app-shadow);
   }
   .budget-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; margin-bottom: 0.5rem; }
   .budget-name { font-size: 0.88rem; font-weight: 600; color: var(--text-primary); }
