@@ -8,6 +8,10 @@
   let toastType = $state<"success" | "error">("success");
   let toastVisible = $state(false);
 
+  // Household name state
+  let householdName = $state("Our Home");
+  let savingHousehold = $state(false);
+
   // Export state
   let exportingTransactions = $state(false);
   let exportingSummary = $state(false);
@@ -34,6 +38,9 @@
         originalKeySet = true;
         apiKey = "\u2022".repeat(20);
       }
+    });
+    invoke<string | null>("get_household_name").then((name) => {
+      if (name) householdName = name;
     });
   });
 
@@ -65,6 +72,19 @@
   function handleClear() {
     apiKey = "";
     originalKeySet = false;
+  }
+
+  async function handleSaveHousehold() {
+    if (!householdName.trim()) return;
+    savingHousehold = true;
+    try {
+      await invoke("save_household_name", { name: householdName.trim() });
+      showToast("Household name saved.", "success");
+    } catch (e) {
+      showToast(String(e), "error");
+    } finally {
+      savingHousehold = false;
+    }
   }
 
   function downloadCsv(csv: string, filename: string) {
@@ -157,6 +177,21 @@
       {#if originalKeySet}
         <button class="btn" onclick={handleClear}>Clear</button>
       {/if}
+    </div>
+  </div>
+
+  <div class="setting-card">
+    <h2>Household Name</h2>
+    <p class="hint">The name displayed in the sidebar for your household.</p>
+    <input
+      type="text"
+      placeholder="Our Home"
+      bind:value={householdName}
+    />
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick={handleSaveHousehold} disabled={savingHousehold}>
+        {savingHousehold ? "Saving\u2026" : "Save"}
+      </button>
     </div>
   </div>
 

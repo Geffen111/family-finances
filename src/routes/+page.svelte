@@ -757,7 +757,7 @@
   .skeleton-block { width: 100%; height: 200px; background: var(--bg-secondary); border-radius: 4px; animation: pulse 1.5s infinite; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-  .error-state { text-align: center; padding: 3rem 2rem; color: #991b1b; background: #fee2e2; border: 1px solid #fecaca; border-radius: 14px; }
+  .error-state { text-align: center; padding: 3rem 2rem; color: var(--neg); background: var(--bg-secondary); border: 1px solid var(--neg); border-radius: 14px; }
   .error-detail { font-size: 0.8rem; color: var(--text-secondary); margin: 0.5rem 0 1rem; word-break: break-all; }
   .empty-state { border: 2px dashed var(--border-color); border-radius: 14px; padding: 3rem 2rem; text-align: center; color: var(--text-secondary); font-size: 1rem; }
   .empty-state p { line-height: 1.6; margin-bottom: 1rem; }

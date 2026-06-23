@@ -1,6 +1,14 @@
 <script lang="ts">
   import { page } from "$app/stores";
   import { darkMode } from "$lib/stores/theme.svelte";
+  import { invoke } from "@tauri-apps/api/core";
+
+  let householdName = $state("Our Home");
+  $effect(() => {
+    invoke<string | null>("get_household_name").then((name) => {
+      if (name) householdName = name;
+    });
+  });
 
   function toggleDark() {
     darkMode.update((v) => !v);
@@ -78,7 +86,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{@html house}</svg>
       </span>
       <div class="household-text">
-        <span class="household-name">Our Home</span>
+        <span class="household-name">{householdName}</span>
         <span class="household-sub">Household</span>
       </div>
     </div>

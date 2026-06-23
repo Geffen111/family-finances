@@ -638,7 +638,7 @@
   .search-input { margin-left: auto; min-width: 220px; padding: 0.4rem 0.6rem; border: 1px solid var(--border-color); border-radius: 10px; font-size: 0.85rem; background: var(--bg-card); color: var(--text-primary); }
 
   .bulk-bar { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; padding: 0.6rem 0.9rem; background: var(--accent-soft); border: 1px solid var(--border-color); border-radius: 14px; flex-wrap: wrap; }
-  .bulk-count { font-size: 0.85rem; font-weight: 600; color: #3730a3; }
+  .bulk-count { font-size: 0.85rem; font-weight: 600; color: var(--accent); }
   .bulk-bar .cat-select { width: auto; min-width: 200px; }
 
   .cell-check { width: 2.2rem; text-align: center; }
@@ -655,10 +655,10 @@
   .sort-icon { font-size: 0.7rem; margin-left: 0.25rem; color: var(--text-muted); }
   .tx-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--bg-secondary); }
   .cell-date { white-space: nowrap; color: var(--text-secondary); }
-  .cell-desc { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cell-desc { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
   .cell-debit { text-align: right; color: var(--neg); font-variant-numeric: tabular-nums; }
   .cell-credit { text-align: right; color: var(--pos); font-variant-numeric: tabular-nums; }
-  .cell-balance { text-align: right; font-variant-numeric: tabular-nums; }
+  .cell-balance { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-primary); }
   .cell-category { min-width: 200px; }
   .cat-select { width: 100%; padding: 0.3rem 0.4rem; font-size: 0.8rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-card); color: var(--text-primary); cursor: pointer; }
   .cat-select:hover { border-color: var(--text-muted); }
@@ -710,12 +710,12 @@
   }
   .suggestion-date { color: var(--text-secondary); white-space: nowrap; }
   .suggestion-desc { font-weight: 500; color: var(--text-primary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .suggestion-amount { font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .suggestion-amount { font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--text-primary); }
   .suggestion-category { margin-bottom: 0.3rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
   .suggestion-select {
     font-size: 0.82rem;
     font-weight: 600;
-    color: #7c3aed;
+    color: var(--accent);
     padding: 0.25rem 0.4rem;
     border: 1px solid var(--border-color);
     border-radius: 5px;

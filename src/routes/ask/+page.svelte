@@ -341,7 +341,7 @@
   .working-table td { padding: 0.35rem 0.6rem; border-bottom: 1px solid var(--border-color); color: var(--text-primary); font-variant-numeric: tabular-nums; }
   .working-note { margin: 0.5rem 0 0; font-size: 0.75rem; color: var(--text-muted); }
 
-  .error-state { text-align: center; padding: 2rem; color: #991b1b; background: #fee2e2; border: 1px solid #fecaca; border-radius: 14px; margin-top: 1.5rem; }
+  .error-state { text-align: center; padding: 2rem; color: var(--neg); background: var(--bg-secondary); border: 1px solid var(--neg); border-radius: 14px; margin-top: 1.5rem; }
   .error-detail { font-size: 0.8rem; color: var(--text-secondary); margin: 0.5rem 0 1rem; word-break: break-all; }
 
   /* Insights */
@@ -358,7 +358,7 @@
   .insight-card-skeleton { width: 100%; height: 6rem; }
   .insights-grid-skeleton { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
 
-  .insights-error { text-align: center; padding: 2rem; color: #991b1b; background: #fee2e2; border: 1px solid #fecaca; border-radius: 14px; }
+  .insights-error { text-align: center; padding: 2rem; color: var(--neg); background: var(--bg-secondary); border: 1px solid var(--neg); border-radius: 14px; }
 
   .insights-summary-card { background: var(--accent-soft); border: 1px solid var(--border-color); border-radius: 14px; padding: 1.25rem; margin-bottom: 1.5rem; }
   .insights-summary-card p { margin: 0; font-size: 1rem; color: var(--text-primary); line-height: 1.5; }

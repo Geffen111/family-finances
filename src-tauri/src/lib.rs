@@ -37,6 +37,8 @@ pub fn run() {
             commands::dashboard::get_spending_trend_by_category,
             commands::settings::save_api_key,
             commands::settings::get_api_key,
+            commands::settings::save_household_name,
+            commands::settings::get_household_name,
             commands::categorise::categorise_transactions,
             commands::categorise::accept_categorisations,
             commands::recurring::get_recurring_transactions,
