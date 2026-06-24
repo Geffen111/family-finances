@@ -10,5 +10,6 @@ pub mod settings;
 pub mod categorise;
 pub mod recurring;
 pub mod goals;
+pub mod assets;
 pub mod export;
 pub mod ask;

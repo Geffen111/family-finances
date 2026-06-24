@@ -1,5 +1,12 @@
 * text=auto
 
+# sqlx embeds each migration file's bytes and stores their checksum in the DB's
+# _sqlx_migrations table. With `text=auto` the same .sql file can end up LF on
+# one checkout and CRLF on another, producing different checksums and a runtime
+# `VersionMismatch` panic. Pin migrations to CRLF on every platform so the
+# checksum is identical everywhere and matches the already-migrated synced DB.
+*.sql text eol=crlf
+
 *.png binary
 *.jpg binary
 *.jpeg binary

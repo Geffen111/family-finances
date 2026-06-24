@@ -183,3 +183,112 @@ pub async fn get_accounts(pool: State<'_, SqlitePool>) -> Result<Vec<Account>, S
     .await
     .map_err(|e| format!("DB query error: {}", e))
 }
+
+#[derive(Debug, serde::Serialize)]
+pub struct MoveResult {
+    pub moved: i64,
+    pub skipped_duplicate: i64,
+}
+
+// Move one or more transactions to a different account. Used to fix imports
+// that landed against the wrong account. Mirrors the CSV import dedupe guard:
+// if an identical row (same date, description and amounts) already exists in the
+// target account, the moved copy is dropped instead of creating a duplicate.
+#[tauri::command]
+pub async fn move_transactions(
+    pool: State<'_, SqlitePool>,
+    transaction_ids: Vec<i64>,
+    account_id: i64,
+) -> Result<MoveResult, String> {
+    if transaction_ids.is_empty() {
+        return Ok(MoveResult { moved: 0, skipped_duplicate: 0 });
+    }
+
+    // Confirm the target account exists before reassigning.
+    let target_exists: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM accounts WHERE id = ?",
+    )
+    .bind(account_id)
+    .fetch_one(&*pool)
+    .await
+    .map_err(|e| format!("DB query error: {}", e))?
+        > 0;
+    if !target_exists {
+        return Err(format!("Account {} does not exist", account_id));
+    }
+
+    let mut moved: i64 = 0;
+    let mut skipped_duplicate: i64 = 0;
+
+    for id in &transaction_ids {
+        let tx = sqlx::query_as::<_, Transaction>(
+            "SELECT id, account_id, category_id, date, description, debit, credit, balance, \
+             ai_category, ai_category_conf, ai_categorised_at, notes, created_at \
+             FROM transactions WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&*pool)
+        .await
+        .map_err(|e| format!("DB query error: {}", e))?;
+
+        let Some(tx) = tx else { continue };
+
+        // Already in the target account — nothing to do.
+        if tx.account_id == account_id {
+            continue;
+        }
+
+        // Does an identical row already exist in the target account?
+        let dup: bool = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM transactions \
+             WHERE account_id = ? AND date = ? AND description = ? AND debit = ? AND credit = ? AND id != ?",
+        )
+        .bind(account_id)
+        .bind(&tx.date)
+        .bind(&tx.description)
+        .bind(tx.debit)
+        .bind(tx.credit)
+        .bind(id)
+        .fetch_one(&*pool)
+        .await
+        .map_err(|e| format!("DB query error: {}", e))?
+            > 0;
+
+        if dup {
+            // The target already has this transaction; drop the duplicate copy
+            // rather than moving it and creating two identical rows.
+            sqlx::query("DELETE FROM transactions WHERE id = ?")
+                .bind(id)
+                .execute(&*pool)
+                .await
+                .map_err(|e| format!("DB delete error: {}", e))?;
+            skipped_duplicate += 1;
+        } else {
+            sqlx::query("UPDATE transactions SET account_id = ? WHERE id = ?")
+                .bind(account_id)
+                .bind(id)
+                .execute(&*pool)
+                .await
+                .map_err(|e| format!("DB update error: {}", e))?;
+            moved += 1;
+        }
+    }
+
+    Ok(MoveResult { moved, skipped_duplicate })
+}
+
+// When was the most recent transaction imported for this account. Derived from
+// created_at (set at insert time), so it needs no extra tracking table.
+#[tauri::command]
+pub async fn get_last_import(
+    pool: State<'_, SqlitePool>,
+    account_id: i64,
+) -> Result<Option<String>, String> {
+    sqlx::query_scalar::<_, Option<String>>(
+        "SELECT MAX(created_at) FROM transactions WHERE account_id = ?",
+    )
+    .bind(account_id)
+    .fetch_one(&*pool)
+    .await
+    .map_err(|e| format!("DB query error: {}", e))
+}

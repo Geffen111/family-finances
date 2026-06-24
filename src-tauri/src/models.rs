@@ -65,6 +65,16 @@ pub struct RecurringCost {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct Asset {
+    pub id: i64,
+    pub name: String,
+    pub asset_type: String,
+    pub value: f64,
+    pub notes: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct SavingsGoal {
     pub id: i64,
     pub name: String,

@@ -43,6 +43,15 @@
     net_worth: number;
   }
 
+  interface Asset {
+    id: number;
+    name: string;
+    asset_type: string;
+    value: number;
+    notes: string | null;
+    created_at: string;
+  }
+
   interface CategorySpendingChild {
     category_id: number;
     name: string;
@@ -81,8 +90,28 @@
   let expandedCategories = $state<Set<number>>(new Set());
   let recurring = $state<RecurringCost[]>([]);
   let netWorth = $state<NetWorthPoint[]>([]);
+  let assets = $state<Asset[]>([]);
   let loading = $state(true);
   let error = $state("");
+
+  // Asset types: label + emoji icon, used in the card and to colour chart bands.
+  const ASSET_TYPES = [
+    { value: "property", label: "Property", icon: "\u{1F3E0}" },
+    { value: "investment", label: "Investment", icon: "\u{1F4C8}" },
+    { value: "vehicle", label: "Vehicle", icon: "\u{1F697}" },
+    { value: "cash", label: "Cash", icon: "\u{1F4B5}" },
+    { value: "other", label: "Other", icon: "\u{1F4E6}" },
+  ];
+  function assetIcon(type: string): string {
+    return ASSET_TYPES.find((t) => t.value === type)?.icon ?? "\u{1F4E6}";
+  }
+
+  // New-asset form state.
+  let newAssetName = $state("");
+  let newAssetType = $state("property");
+  let newAssetValue = $state("");
+  let assetSaving = $state(false);
+  let assetError = $state("");
 
   type DatePreset = "thisMonth" | "lastMonth" | "last3Months" | "last6Months" | "last24Months" | "ytd" | "all";
   let activePreset = $state<DatePreset>("last6Months");
@@ -436,10 +465,54 @@
     }
   }
 
+  async function loadAssets() {
+    try {
+      assets = await invoke<Asset[]>("list_assets");
+    } catch (e) {
+      assets = [];
+    }
+  }
+
+  let assetsTotal = $derived(assets.reduce((s, a) => s + a.value, 0));
+  // Latest account-derived net worth, plus assets = total household net worth.
+  let accountsNetWorth = $derived(netWorth.length > 0 ? netWorth[netWorth.length - 1].net_worth : 0);
+  let totalNetWorth = $derived(accountsNetWorth + assetsTotal);
+
+  async function addAsset() {
+    assetError = "";
+    const name = newAssetName.trim();
+    const value = parseFloat(newAssetValue);
+    if (!name) { assetError = "Enter a name."; return; }
+    if (!isFinite(value)) { assetError = "Enter a value."; return; }
+    assetSaving = true;
+    try {
+      await invoke("create_asset", { name, assetType: newAssetType, value, notes: null });
+      newAssetName = "";
+      newAssetValue = "";
+      newAssetType = "property";
+      await loadAssets();
+    } catch (e) {
+      assetError = String(e);
+    } finally {
+      assetSaving = false;
+    }
+  }
+
+  async function removeAsset(id: number) {
+    try {
+      await invoke("delete_asset", { id });
+      await loadAssets();
+    } catch (e) {
+      assetError = String(e);
+    }
+  }
+
   let netWorthChart: ChartType | null = null;
 
   $effect(() => {
     if (loading || netWorth.length === 0) return;
+    // Read reactive state synchronously so the chart redraws when assets change.
+    const assetList = assets;
     const dark = $darkMode;
     (async () => {
       void dark;
@@ -450,40 +523,60 @@
       const accent = themeVar("--accent", "#7f9a6f");
       const grid = themeVar("--border-color", "#ece0cc");
       const tick = themeVar("--text-muted", "#a89f90");
-      const ctx2d = canvas.getContext("2d");
-      let fill: string | CanvasGradient = withAlpha(accent, 0.16);
-      if (ctx2d) {
-        const grad = ctx2d.createLinearGradient(0, 0, 0, canvas.height || 300);
-        grad.addColorStop(0, withAlpha(accent, 0.18));
-        grad.addColorStop(1, withAlpha(accent, 0));
-        fill = grad;
-      }
+      const series = chartSeries();
+      const labels = netWorth.map((p) => p.label);
+
+      // Bottom band: net worth derived from account balances over time. Above it,
+      // one stacked band per manually-tracked asset (held flat across the period,
+      // since assets carry a single current value, not month-by-month history).
+      const datasets: any[] = [
+        {
+          label: "Accounts",
+          data: netWorth.map((p) => p.net_worth),
+          borderColor: accent,
+          backgroundColor: withAlpha(accent, 0.5),
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.35,
+          fill: true,
+        },
+      ];
+      assetList.forEach((a, i) => {
+        const c = series[i % series.length];
+        datasets.push({
+          label: a.name,
+          data: labels.map(() => a.value),
+          borderColor: c,
+          backgroundColor: withAlpha(c, 0.5),
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0,
+          fill: true,
+        });
+      });
+
+      const stacked = assetList.length > 0;
       netWorthChart = new Chart(canvas, {
         type: "line",
-        data: {
-          labels: netWorth.map((p) => p.label),
-          datasets: [{
-            label: "Net Worth",
-            data: netWorth.map((p) => p.net_worth),
-            borderColor: accent,
-            backgroundColor: fill,
-            borderWidth: 2.5,
-            pointRadius: 0,
-            tension: 0.35,
-            fill: true,
-          }],
-        },
+        data: { labels, datasets },
         options: {
           responsive: true,
           maintainAspectRatio: true,
           interaction: { intersect: false, mode: "index" },
           scales: {
-            y: { border: { display: false }, grid: { color: grid }, ticks: { color: tick, callback: (v: any) => fmt(v) } },
-            x: { border: { display: false }, grid: { display: false }, ticks: { color: tick } },
+            y: { stacked, border: { display: false }, grid: { color: grid }, ticks: { color: tick, callback: (v: any) => fmt(v) } },
+            x: { stacked, border: { display: false }, grid: { display: false }, ticks: { color: tick } },
           },
           plugins: {
-            legend: { display: false },
-            tooltip: { callbacks: { label: (ctx: any) => `Net worth: ${fmt(ctx.parsed.y ?? ctx.parsed)}` } },
+            legend: { display: stacked, position: "bottom", labels: { color: themeVar("--text-secondary", "#7b7468"), usePointStyle: true, pointStyle: "circle", boxWidth: 8 } },
+            tooltip: {
+              callbacks: {
+                label: (ctx: any) => `${ctx.dataset.label}: ${fmt(ctx.parsed.y ?? ctx.parsed)}`,
+                footer: stacked
+                  ? (items: any[]) => `Total: ${fmt(items.reduce((s, it) => s + (it.parsed.y ?? 0), 0))}`
+                  : undefined,
+              },
+            },
           },
         },
       });
@@ -494,6 +587,7 @@
     fetchData();
     loadRecurring();
     loadNetWorth();
+    loadAssets();
     return () => {
       if (netWorthChart) netWorthChart.destroy();
       if (doughnutChart) doughnutChart.destroy();
@@ -618,6 +712,51 @@
         </div>
         <div class="chart-wrap"><canvas id="lineChart"></canvas></div>
       </div>
+    </div>
+
+    <div class="assets-card">
+      <div class="chart-header">
+        <h3>Assets &amp; Investments</h3>
+        {#if assets.length > 0}
+          <span class="assets-total">{fmt(assetsTotal)}</span>
+        {/if}
+      </div>
+
+      {#if assets.length > 0}
+        <ul class="assets-list">
+          {#each assets as a (a.id)}
+            <li class="asset-row">
+              <span class="asset-icon">{assetIcon(a.asset_type)}</span>
+              <span class="asset-name">{a.name}</span>
+              <span class="asset-type">{a.asset_type}</span>
+              <span class="asset-value">{fmt(a.value)}</span>
+              <button class="asset-del" title="Remove" aria-label="Remove asset" onclick={() => removeAsset(a.id)}>&times;</button>
+            </li>
+          {/each}
+        </ul>
+        {#if netWorth.length > 0}
+          <div class="assets-networth">
+            <span>Total net worth (accounts + assets)</span>
+            <strong>{fmt(totalNetWorth)}</strong>
+          </div>
+        {/if}
+      {:else}
+        <p class="assets-empty">Add an asset like your home or investments to see it in your net worth.</p>
+      {/if}
+
+      <form class="asset-form" onsubmit={(e) => { e.preventDefault(); addAsset(); }}>
+        <input class="asset-input asset-input-name" type="text" placeholder="e.g. Family home" bind:value={newAssetName} />
+        <select class="asset-input asset-input-type" bind:value={newAssetType}>
+          {#each ASSET_TYPES as t}
+            <option value={t.value}>{t.icon} {t.label}</option>
+          {/each}
+        </select>
+        <input class="asset-input asset-input-value" type="number" step="0.01" placeholder="Value" bind:value={newAssetValue} />
+        <button class="btn btn-primary btn-sm" type="submit" disabled={assetSaving}>{assetSaving ? "Adding…" : "Add"}</button>
+      </form>
+      {#if assetError}
+        <p class="asset-error">{assetError}</p>
+      {/if}
     </div>
 
     {#if categoryTree.length > 0}
@@ -826,5 +965,25 @@
   .recurring-summary-right { text-align: right; }
   .recurring-summary-amount { font-family: "Bitter", Georgia, serif; font-size: 1.3rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
   .recurring-summary-per { font-size: 0.78rem; color: var(--text-secondary); margin-left: 0.15rem; }
+
+  .assets-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-card); padding: 1.5rem; box-shadow: var(--app-shadow); margin-top: 1.25rem; }
+  .assets-card h3 { font-size: 1rem; font-weight: 600; color: var(--text-primary); margin-bottom: 0; }
+  .assets-total { font-size: 1.1rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+  .assets-list { list-style: none; margin: 0 0 0.75rem; padding: 0; }
+  .asset-row { display: flex; align-items: center; gap: 0.7rem; padding: 0.55rem 0; border-bottom: 1px solid var(--bg-secondary); }
+  .asset-icon { font-size: 1.1rem; width: 1.6rem; text-align: center; }
+  .asset-name { font-weight: 600; color: var(--text-primary); }
+  .asset-type { font-size: 0.72rem; color: var(--text-secondary); text-transform: capitalize; background: var(--accent-soft); padding: 0.1rem 0.5rem; border-radius: var(--radius-pill); }
+  .asset-value { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text-primary); }
+  .asset-del { background: none; border: none; color: var(--text-muted); font-size: 1.2rem; line-height: 1; cursor: pointer; padding: 0 0.2rem; }
+  .asset-del:hover { color: var(--neg); }
+  .assets-networth { display: flex; justify-content: space-between; align-items: center; padding: 0.6rem 0.75rem; margin-bottom: 0.75rem; background: var(--bg-secondary); border-radius: 10px; font-size: 0.9rem; color: var(--text-secondary); }
+  .assets-networth strong { font-size: 1.1rem; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+  .assets-empty { color: var(--text-secondary); font-size: 0.9rem; margin: 0 0 0.9rem; }
+  .asset-form { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+  .asset-input { padding: 0.45rem 0.6rem; border: 1px solid var(--border-color); border-radius: 8px; font-size: 0.85rem; background: var(--bg-card); color: var(--text-primary); }
+  .asset-input-name { flex: 1; min-width: 160px; }
+  .asset-input-value { width: 130px; }
+  .asset-error { color: var(--neg); font-size: 0.8rem; margin: 0.5rem 0 0; }
 
 </style>

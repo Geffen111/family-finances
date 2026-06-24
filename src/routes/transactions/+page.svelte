@@ -75,6 +75,15 @@
   let hasApiKey = $state<boolean>(false);
   let uncategorisedCount = $state(0);
 
+  let lastImport = $state<string | null>(null);
+
+  // "Import for which account?" prompt before the file picker.
+  let showImportModal = $state(false);
+  let importAccountId = $state<number>(0);
+
+  // Bulk "move to another account" target.
+  let moveAccountId = $state<string>("");
+
   const currencyFormat = new Intl.NumberFormat("en-AU", {
     style: "currency",
     currency: "AUD",
@@ -112,11 +121,29 @@
       transactions = await invoke<Transaction[]>("get_transactions", params);
       uncategorisedCount = transactions.filter((t) => t.category_id == null).length;
       selectedTxIds = new Set();
+      loadLastImport();
     } catch (e) {
       showToast(String(e), "error");
     } finally {
       loading = false;
     }
+  }
+
+  async function loadLastImport() {
+    try {
+      lastImport = await invoke<string | null>("get_last_import", {
+        accountId: selectedAccountId,
+      });
+    } catch {
+      lastImport = null;
+    }
+  }
+
+  // Format the stored "YYYY-MM-DD HH:MM:SS" (UTC) timestamp for display.
+  function formatLastImport(ts: string): string {
+    const d = new Date(ts.replace(" ", "T") + "Z");
+    if (isNaN(d.getTime())) return ts;
+    return format(d, "d MMM yyyy, h:mm a");
   }
 
   function showToast(msg: string, type: "success" | "error") {
@@ -218,7 +245,14 @@
     return "var(--neg)";
   }
 
-  async function handleImportCsv() {
+  function openImportModal() {
+    importAccountId = selectedAccountId || (accounts.length > 0 ? accounts[0].id : 0);
+    showImportModal = true;
+  }
+
+  // Called once the user has confirmed which account to import into.
+  function handleImportCsv(accountId: number) {
+    showImportModal = false;
     const input = document.createElement("input");
     input.type = "file";
     input.accept = ".csv";
@@ -230,11 +264,17 @@
       try {
         const res = await invoke<{ imported: number; skipped_duplicate: number }>("csv_import", {
           csvContent: text,
-          accountId: selectedAccountId,
+          accountId,
         });
         const dupNote = res.skipped_duplicate > 0 ? ` (${res.skipped_duplicate} duplicate${res.skipped_duplicate === 1 ? "" : "s"} skipped)` : "";
-        showToast(`Imported ${res.imported} transaction${res.imported === 1 ? "" : "s"}${dupNote}.`, "success");
-        await loadTransactions();
+        const acctName = accounts.find((a) => a.id === accountId)?.name ?? "account";
+        showToast(`Imported ${res.imported} transaction${res.imported === 1 ? "" : "s"} into ${acctName}${dupNote}.`, "success");
+        // Jump to the account we imported into so the user sees the result.
+        if (accountId !== selectedAccountId) {
+          selectedAccountId = accountId;
+        } else {
+          await loadTransactions();
+        }
       } catch (e) {
         showToast(String(e), "error");
       } finally {
@@ -361,6 +401,27 @@
     }
   }
 
+  async function applyMoveAccount() {
+    if (selectedTxIds.size === 0 || !moveAccountId) return;
+    const targetId = Number(moveAccountId);
+    const targetName = accounts.find((a) => a.id === targetId)?.name ?? "account";
+    try {
+      const res = await invoke<{ moved: number; skipped_duplicate: number }>("move_transactions", {
+        transactionIds: [...selectedTxIds],
+        accountId: targetId,
+      });
+      const dupNote = res.skipped_duplicate > 0
+        ? ` (${res.skipped_duplicate} duplicate${res.skipped_duplicate === 1 ? "" : "s"} already there, removed)`
+        : "";
+      showToast(`Moved ${res.moved} transaction${res.moved === 1 ? "" : "s"} to ${targetName}${dupNote}.`, "success");
+      selectedTxIds = new Set();
+      moveAccountId = "";
+      await loadTransactions();
+    } catch (e) {
+      showToast(String(e), "error");
+    }
+  }
+
   function getCategoryPath(categoryId: number | null): string {
     if (categoryId == null) return "";
     const cat = categories.find((c) => c.id === categoryId);
@@ -385,7 +446,7 @@
   }
 </script>
 
-<svelte:window onkeydown={(e) => { if (e.key === "Escape") showAiModal = false; }} />
+<svelte:window onkeydown={(e) => { if (e.key === "Escape") { showAiModal = false; showImportModal = false; } }} />
 
 <div class="page">
   <div class="header">
@@ -402,7 +463,7 @@
           </button>
         {/if}
       {/if}
-      <button class="btn btn-import" onclick={handleImportCsv} disabled={importing}>
+      <button class="btn btn-import" onclick={openImportModal} disabled={importing}>
         {importing ? "Importing\u2026" : "Import CSV"}
       </button>
     </div>
@@ -425,6 +486,14 @@
       </button>
     {/each}
   </div>
+
+  <p class="last-import">
+    {#if lastImport}
+      Last import for this account: {formatLastImport(lastImport)}
+    {:else}
+      No transactions imported for this account yet.
+    {/if}
+  </p>
 
   <div class="filters">
     <label>
@@ -451,6 +520,17 @@
         {/each}
       </select>
       <button class="btn btn-sm btn-primary" onclick={applyBulkCategory}>Apply to selected</button>
+      <span class="bulk-sep"></span>
+      <span class="bulk-label">Move to</span>
+      <select class="cat-select" bind:value={moveAccountId}>
+        <option value="">Choose account…</option>
+        {#each accounts as acc (acc.id)}
+          {#if acc.id !== selectedAccountId}
+            <option value={acc.id}>{acc.name}</option>
+          {/if}
+        {/each}
+      </select>
+      <button class="btn btn-sm" onclick={applyMoveAccount} disabled={!moveAccountId}>Move account</button>
       <button class="btn btn-sm" onclick={() => { selectedTxIds = new Set(); }}>Clear</button>
     </div>
   {/if}
@@ -607,6 +687,34 @@
   </div>
 {/if}
 
+{#if showImportModal}
+  <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) showImportModal = false; }}>
+    <div class="modal modal-sm" role="dialog" aria-modal="true" tabindex="-1">
+      <div class="modal-header">
+        <h2>Import transactions for which account?</h2>
+        <button class="modal-close" onclick={() => { showImportModal = false; }}>&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-hint">Choose the account these transactions belong to, then pick your CSV file.</p>
+        <select class="cat-select import-account-select" bind:value={importAccountId}>
+          {#each accounts as acc (acc.id)}
+            <option value={acc.id}>{acc.name}</option>
+          {/each}
+        </select>
+      </div>
+      <div class="modal-footer">
+        <div class="modal-footer-left"></div>
+        <div class="modal-footer-right">
+          <button class="btn" onclick={() => { showImportModal = false; }}>Cancel</button>
+          <button class="btn btn-primary" onclick={() => handleImportCsv(importAccountId)} disabled={!importAccountId}>
+            Choose CSV…
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   .page { max-width: 1320px; margin: 0 auto; }
   .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
@@ -632,6 +740,7 @@
   .account-btn { padding: 0.5rem 1rem; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-card); color: var(--text-primary); font-size: 0.875rem; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
   .account-btn:hover { background: var(--bg-secondary); }
   .account-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .last-import { font-size: 0.8rem; color: var(--text-secondary); margin: -0.5rem 0 1rem; }
   .filters { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; }
   .filters label { font-size: 0.8rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.3rem; }
   .filters input[type="date"] { padding: 0.3rem 0.5rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.8rem; }
@@ -640,6 +749,8 @@
   .bulk-bar { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; padding: 0.6rem 0.9rem; background: var(--accent-soft); border: 1px solid var(--border-color); border-radius: 14px; flex-wrap: wrap; }
   .bulk-count { font-size: 0.85rem; font-weight: 600; color: var(--accent); }
   .bulk-bar .cat-select { width: auto; min-width: 200px; }
+  .bulk-sep { width: 1px; align-self: stretch; background: var(--border-color); margin: 0 0.25rem; }
+  .bulk-label { font-size: 0.85rem; color: var(--text-secondary); }
 
   .cell-check { width: 2.2rem; text-align: center; }
   .cell-check input { cursor: pointer; }
@@ -679,6 +790,8 @@
     max-height: 85vh; display: flex; flex-direction: column;
     box-shadow: 0 20px 60px rgba(0,0,0,0.2);
   }
+  .modal-sm { width: min(440px, 90vw); }
+  .import-account-select { width: 100%; padding: 0.5rem; font-size: 0.9rem; }
   .modal-header {
     display: flex; justify-content: space-between; align-items: center;
     padding: 1rem 1.5rem; border-bottom: 1px solid var(--border-color);
