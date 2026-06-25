@@ -324,7 +324,7 @@
   .api-key-note a { color: var(--accent); font-weight: 600; }
   h2 { font-size: 1.25rem; font-weight: 700; color: var(--text-primary); margin: 0; }
 
-  .btn { padding: 0.5rem 1rem; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-card); color: var(--text-primary); font-size: 0.875rem; cursor: pointer; }
+  .btn { padding: 0.5rem 1rem; border: 1px solid var(--border-color); border-radius: var(--radius-pill); background: var(--bg-card); color: var(--text-primary); font-size: 0.875rem; cursor: pointer; }
   .btn:hover { background: var(--bg-secondary); }
   .btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn-sm { padding: 0.3rem 0.65rem; font-size: 0.8rem; }

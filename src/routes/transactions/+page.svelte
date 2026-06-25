@@ -1063,7 +1063,7 @@
   .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
   h1 { font-size: 1.75rem; font-weight: 700; color: var(--text-primary); }
   .header-actions { display: flex; gap: 0.5rem; align-items: center; }
-  .btn { padding: 0.5rem 1rem; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-card); color: var(--text-primary); font-size: 0.875rem; cursor: pointer; transition: background 0.15s; }
+  .btn { padding: 0.5rem 1rem; border: 1px solid var(--border-color); border-radius: var(--radius-pill); background: var(--bg-card); color: var(--text-primary); font-size: 0.875rem; cursor: pointer; transition: background 0.15s; }
   .btn:hover { background: var(--bg-secondary); }
   .btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn-sm { padding: 0.3rem 0.65rem; font-size: 0.8rem; }
@@ -1073,14 +1073,14 @@
   .btn-import:hover { background: var(--accent); }
   .btn-ai { background: #7c3aed; color: #fff; border-color: #7c3aed; }
   .btn-ai:hover { background: #6d28d9; }
-  .btn-warning { background: var(--amber); color: #fff; border-color: var(--amber); text-decoration: none; font-size: 0.875rem; padding: 0.5rem 1rem; border-radius: 10px; }
+  .btn-warning { background: var(--amber); color: #fff; border-color: var(--amber); text-decoration: none; font-size: 0.875rem; padding: 0.5rem 1rem; border-radius: var(--radius-pill); }
   .btn-warning:hover { background: var(--amber); filter: brightness(0.95); }
   .toast { position: fixed; top: 1rem; left: 50%; transform: translateX(-50%); z-index: 200; padding: 0.75rem 1.25rem; border-radius: 14px; font-size: 0.875rem; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15); animation: toast-in 0.2s ease-out; }
   @keyframes toast-in { from { opacity: 0; transform: translateX(-50%) translateY(-0.5rem); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
   .toast-success { background: var(--accent-soft); color: var(--nav-active-fg); border: 1px solid var(--accent); }
   .toast-error { background: var(--neg-soft); color: var(--neg); border: 1px solid var(--neg); }
   .account-selector { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
-  .account-btn { padding: 0.5rem 1rem; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-card); color: var(--text-primary); font-size: 0.875rem; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+  .account-btn { padding: 0.5rem 1rem; border: 1px solid var(--border-color); border-radius: var(--radius-pill); background: var(--bg-card); color: var(--text-primary); font-size: 0.875rem; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
   .account-btn:hover { background: var(--bg-secondary); }
   .account-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
   .last-import { font-size: 0.8rem; color: var(--text-secondary); margin: -0.5rem 0 1rem; }
