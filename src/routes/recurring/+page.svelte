@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { formatDate } from "$lib/format";
+  import { showToast } from "$lib/stores/toast.svelte";
 
   interface RecurringCost {
     id: number;
@@ -50,10 +51,6 @@
   let deleteId = $state(0);
   let deleteName = $state("");
 
-  let toastMsg = $state("");
-  let toastType = $state<"success" | "error">("success");
-  let toastVisible = $state(false);
-
   const currencyFormat = new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" });
   function fmt(v: number): string { return currencyFormat.format(v); }
 
@@ -78,13 +75,6 @@
     } finally {
       loading = false;
     }
-  }
-
-  function showToast(msg: string, type: "success" | "error") {
-    toastMsg = msg;
-    toastType = type;
-    toastVisible = true;
-    setTimeout(() => { toastVisible = false; }, 4000);
   }
 
   function openAdd() {
@@ -166,10 +156,6 @@
     </div>
     <button class="btn btn-primary" onclick={openAdd}>Add Recurring</button>
   </div>
-
-  {#if toastVisible}
-    <div class="toast" class:toast-error={toastType === "error"} class:toast-success={toastType === "success"}>{toastMsg}</div>
-  {/if}
 
   {#if loading}
     <p class="loading">Loading…</p>
@@ -253,20 +239,6 @@
   h1 { font-size: 1.75rem; font-weight: 700; color: var(--text-primary); }
   .subtitle { margin-top: 0.25rem; font-size: 0.9rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
   h2 { font-size: 1.25rem; font-weight: 600; margin-bottom: 1rem; color: var(--text-primary); }
-
-  .btn { padding: 0.5rem 1rem; border: 1px solid var(--border-color); border-radius: var(--radius-pill); background: var(--bg-card); color: var(--text-primary); font-size: 0.875rem; cursor: pointer; transition: background 0.15s; }
-  .btn:hover { background: var(--bg-secondary); }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn-sm { padding: 0.3rem 0.65rem; font-size: 0.8rem; }
-  .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-  .btn-primary:hover { background: var(--accent); }
-  .btn-danger { background: var(--neg); color: #fff; border-color: var(--neg); }
-  .btn-danger:hover { background: var(--neg); }
-
-  .toast { position: fixed; top: 1rem; left: 50%; transform: translateX(-50%); z-index: 200; padding: 0.75rem 1.25rem; border-radius: 14px; font-size: 0.875rem; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15); animation: toast-in 0.2s ease-out; }
-  @keyframes toast-in { from { opacity: 0; transform: translateX(-50%) translateY(-0.5rem); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
-  .toast-success { background: var(--accent-soft); color: var(--nav-active-fg); border: 1px solid var(--accent); }
-  .toast-error { background: var(--neg-soft); color: var(--neg); border: 1px solid var(--neg); }
 
   .loading { color: var(--text-secondary); padding: 2rem 0; }
   .empty-state { border: 2px dashed var(--border-color); border-radius: var(--radius-card); padding: 3rem 2rem; text-align: center; color: var(--text-secondary); }

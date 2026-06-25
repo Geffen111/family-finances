@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from "$app/stores";
   import { darkMode } from "$lib/stores/theme.svelte";
+  import Toast from "$lib/components/Toast.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { onMount } from "svelte";
@@ -182,6 +183,8 @@
   </main>
 </div>
 
+<Toast />
+
 <style>
   :global(*) {
     margin: 0;
@@ -202,6 +205,30 @@
     font-weight: 600;
     letter-spacing: -0.01em;
   }
+
+  /* Shared button system. Pages add their own one-off colour variants
+     (e.g. .btn-ai, .btn-warning, .btn-suggest, .btn-toggle, .btn-edit). */
+  :global(.btn) {
+    padding: 0.5rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-pill);
+    background: var(--bg-card);
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition: background 0.15s, filter 0.15s;
+  }
+  :global(.btn:hover) { background: var(--bg-secondary); }
+  :global(.btn:disabled) { opacity: 0.5; cursor: not-allowed; }
+  :global(.btn-sm) { padding: 0.3rem 0.65rem; font-size: 0.8rem; }
+  :global(.btn-primary) { background: var(--accent); color: #fff; border-color: var(--accent); }
+  :global(.btn-primary:hover) { background: var(--accent); filter: brightness(0.95); }
+  :global(.btn-import) { background: var(--accent); color: #fff; border-color: var(--accent); }
+  :global(.btn-import:hover) { background: var(--accent); filter: brightness(0.95); }
+  :global(.btn-add) { background: var(--accent); color: #fff; border-color: var(--accent); }
+  :global(.btn-add:hover) { background: var(--accent); filter: brightness(0.95); }
+  :global(.btn-danger), :global(.btn-delete) { background: var(--neg); color: #fff; border-color: var(--neg); }
+  :global(.btn-danger:hover), :global(.btn-delete:hover) { background: var(--neg); filter: brightness(0.95); }
 
   :root {
     /* Hearth — light */

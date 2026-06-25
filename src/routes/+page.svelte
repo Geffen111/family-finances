@@ -1035,21 +1035,6 @@
   .custom-dates label { font-size: 0.8rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.3rem; }
   .custom-dates input[type="date"] { padding: 0.3rem 0.5rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.8rem; }
 
-  .btn {
-    padding: 0.5rem 1.1rem;
-    border: 1px solid var(--border-color);
-    border-radius: var(--radius-pill);
-    background: var(--bg-card);
-    color: var(--text-primary);
-    font-size: 0.875rem;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .btn:hover { background: var(--bg-secondary); }
-  .btn-sm { padding: 0.35rem 0.85rem; font-size: 0.8rem; }
-  .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-  .btn-primary:hover { filter: brightness(0.95); background: var(--accent); }
-
   .loading-grid { display: flex; flex-direction: column; gap: 1.5rem; }
   .skeleton-card { background: var(--bg-card); border: 1px solid var(--track); border-radius: 14px; padding: 1.25rem; }
   .skeleton-line { background: var(--track); border-radius: 4px; animation: pulse 1.5s infinite; }

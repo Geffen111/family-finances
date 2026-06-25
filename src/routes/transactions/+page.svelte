@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { format, startOfMonth, subMonths } from "date-fns";
+  import { showToast } from "$lib/stores/toast.svelte";
 
   interface Account {
     id: number;
@@ -69,10 +70,6 @@
   // Which date filter is active, so the matching button can be highlighted.
   // "custom" covers a manually-picked From/To range.
   let activePreset = $state<"thisMonth" | "last3Months" | "all" | "custom">("all");
-
-  let toastMsg = $state("");
-  let toastType = $state<"success" | "error">("success");
-  let toastVisible = $state(false);
 
   let searchText = $state("");
 
@@ -221,13 +218,6 @@
     const d = new Date(ts.replace(" ", "T") + "Z");
     if (isNaN(d.getTime())) return ts;
     return format(d, "d MMM yyyy, h:mm a");
-  }
-
-  function showToast(msg: string, type: "success" | "error") {
-    toastMsg = msg;
-    toastType = type;
-    toastVisible = true;
-    setTimeout(() => { toastVisible = false; }, 4000);
   }
 
   async function handleAiCategorise() {
@@ -712,12 +702,6 @@
     </div>
   </div>
 
-  {#if toastVisible}
-    <div class="toast" class:toast-error={toastType === "error"} class:toast-success={toastType === "success"}>
-      {toastMsg}
-    </div>
-  {/if}
-
   <div class="account-selector">
     {#each accounts as acc}
       <button
@@ -1063,22 +1047,10 @@
   .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
   h1 { font-size: 1.75rem; font-weight: 700; color: var(--text-primary); }
   .header-actions { display: flex; gap: 0.5rem; align-items: center; }
-  .btn { padding: 0.5rem 1rem; border: 1px solid var(--border-color); border-radius: var(--radius-pill); background: var(--bg-card); color: var(--text-primary); font-size: 0.875rem; cursor: pointer; transition: background 0.15s; }
-  .btn:hover { background: var(--bg-secondary); }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn-sm { padding: 0.3rem 0.65rem; font-size: 0.8rem; }
-  .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-  .btn-primary:hover { background: var(--accent); }
-  .btn-import { background: var(--accent); color: #fff; border-color: var(--accent); }
-  .btn-import:hover { background: var(--accent); }
   .btn-ai { background: #7c3aed; color: #fff; border-color: #7c3aed; }
   .btn-ai:hover { background: #6d28d9; }
   .btn-warning { background: var(--amber); color: #fff; border-color: var(--amber); text-decoration: none; font-size: 0.875rem; padding: 0.5rem 1rem; border-radius: var(--radius-pill); }
   .btn-warning:hover { background: var(--amber); filter: brightness(0.95); }
-  .toast { position: fixed; top: 1rem; left: 50%; transform: translateX(-50%); z-index: 200; padding: 0.75rem 1.25rem; border-radius: 14px; font-size: 0.875rem; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15); animation: toast-in 0.2s ease-out; }
-  @keyframes toast-in { from { opacity: 0; transform: translateX(-50%) translateY(-0.5rem); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
-  .toast-success { background: var(--accent-soft); color: var(--nav-active-fg); border: 1px solid var(--accent); }
-  .toast-error { background: var(--neg-soft); color: var(--neg); border: 1px solid var(--neg); }
   .account-selector { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
   .account-btn { padding: 0.5rem 1rem; border: 1px solid var(--border-color); border-radius: var(--radius-pill); background: var(--bg-card); color: var(--text-primary); font-size: 0.875rem; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
   .account-btn:hover { background: var(--bg-secondary); }
