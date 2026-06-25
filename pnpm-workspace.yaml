@@ -1,4 +1,10 @@
+allowBuilds:
+  esbuild: set this to true or false
 onlyBuiltDependencies:
   - esbuild
 # Don't re-run `pnpm install` before every `pnpm <script>` invocation.
 verifyDepsBeforeRun: false
+# Force a patched transitive `cookie` (GHSA: <0.7.0 accepts out-of-bounds
+# characters in name/path/domain). SvelteKit still pins ^0.6.0.
+overrides:
+  cookie: "^0.7.0"
