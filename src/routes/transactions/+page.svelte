@@ -413,6 +413,21 @@
   let totalCredits = $derived(visibleTransactions.reduce((sum, t) => sum + t.credit, 0));
   let net = $derived(totalCredits - totalDebits);
 
+  // Only render a window of rows at a time. Each row has an 89-option category
+  // <select>, so rendering a whole large account (e.g. 3,695 credit-card rows =
+  // ~330k <option> nodes) froze the page for ~30s. Totals/selection still use
+  // the full `visibleTransactions` list — this only caps what's in the DOM.
+  const PAGE_SIZE = 200;
+  let renderLimit = $state(PAGE_SIZE);
+  let displayedTransactions = $derived(visibleTransactions.slice(0, renderLimit));
+
+  // Reset the window whenever the account or search changes.
+  $effect(() => {
+    selectedAccountId;
+    searchText;
+    renderLimit = PAGE_SIZE;
+  });
+
   let subcategories = $derived(categories.filter((c) => c.parent_id !== null));
 
   // Bulk selection + re-categorise.
@@ -624,7 +639,7 @@
           </tr>
         </thead>
         <tbody>
-          {#each visibleTransactions as tx (tx.id)}
+          {#each displayedTransactions as tx (tx.id)}
             <tr class:row-selected={selectedTxIds.has(tx.id)}>
               <td class="cell-check">
                 <input type="checkbox" checked={selectedTxIds.has(tx.id)} onchange={() => toggleSelect(tx.id)} aria-label="Select transaction" />
@@ -654,6 +669,16 @@
         </tbody>
       </table>
     </div>
+
+    {#if displayedTransactions.length < visibleTransactions.length}
+      <div class="load-more">
+        <span class="load-more-info">
+          Showing {displayedTransactions.length} of {visibleTransactions.length}
+        </span>
+        <button class="btn btn-sm" onclick={() => (renderLimit += PAGE_SIZE)}>Load more</button>
+        <button class="btn btn-sm" onclick={() => (renderLimit = visibleTransactions.length)}>Show all</button>
+      </div>
+    {/if}
 
     <div class="summary">
       <div class="summary-item">
@@ -835,6 +860,9 @@
   .summary-value { font-size: 1.05rem; font-weight: 700; font-variant-numeric: tabular-nums; }
   .summary-debit { color: var(--neg); }
   .summary-credit { color: var(--pos); }
+
+  .load-more { display: flex; align-items: center; gap: 0.75rem; justify-content: center; margin-top: 0.75rem; }
+  .load-more-info { font-size: 0.8rem; color: var(--text-secondary); margin-right: 0.25rem; }
 
   .modal-overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.5);
