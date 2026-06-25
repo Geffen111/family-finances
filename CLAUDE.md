@@ -1,7 +1,8 @@
 # Family Finance — project guide
 
-Local-first desktop app to replace a family-finances spreadsheet. Private repo:
-`github.com/Geffen111/family-finances`.
+Local-first desktop app to replace a family-finances spreadsheet. Public repo (MIT):
+`github.com/Geffen111/family-finances`. No secrets or financial data live in the repo —
+the SQLite DB stays on the user's machine.
 
 ## Stack
 - **Shell:** Tauri v2 (Rust backend, `src-tauri/`)
@@ -24,18 +25,26 @@ present locally, so `cargo check` works.
 
 ## Build & release (GitHub Actions → `.github/workflows/build.yml`)
 Pushing to `main` builds **x64 and ARM64** installers and publishes them to a rolling
-`latest` GitHub Release (private). Download page:
-`github.com/Geffen111/family-finances/releases/tag/latest` — `*_x64_*` for normal PCs,
-`*_arm64_*` for Windows-on-ARM.
+`latest` (public) GitHub Release, plus a `build-info.json` (the commit, via `GITHUB_SHA`).
+Download page: `github.com/Geffen111/family-finances/releases/tag/latest` — `*_x64_*` for
+normal PCs, `*_arm64_*` for Windows-on-ARM. Note: the workflow runs on *any* push to `main`
+(including docs), so a README-only change still cuts a release.
+
+The app's in-app "update available" banner (sidebar) compares the commit Vite stamps in
+(`__APP_COMMIT__`, see `vite.config.js`) against `build-info.json`; needs the repo public.
 
 CI quirks that are load-bearing — don't "simplify" these away:
-- The CI pnpm is security-wrapped: it ignores `onlyBuiltDependencies` and hard-fails on
-  esbuild's build script, and re-runs `pnpm install` before every script. Mitigated by
-  `pnpm rebuild esbuild` in the install step + `npm_config_verify_deps_before_run: "false"`.
+- The CI pnpm is security-wrapped: it hard-fails on esbuild's build script and re-runs
+  `pnpm install` before every script. Mitigated by `pnpm rebuild esbuild` in the install
+  step + `npm_config_verify_deps_before_run: "false"`. pnpm 11 no longer reads the
+  package.json `pnpm` field — project settings (`onlyBuiltDependencies`, `overrides`, e.g.
+  the `cookie` security pin) live in `pnpm-workspace.yaml`.
 - `rustflags: ""` on the Rust setup step (the action defaults to `-D warnings`, which would
   fail the build on any warning).
 - ARM64 is a second `pnpm tauri build --target aarch64-pc-windows-msvc`; its bundles live
   under `src-tauri/target/aarch64-pc-windows-msvc/release/bundle/`.
+- Actions are pinned to Node-24 majors (`checkout@v5`, `setup-node@v5`); `action-gh-release@v2`
+  still warns about Node 20 until softprops ships a Node-24 release.
 
 ## Database
 - Path: `%OneDrive%\Apps\FamilyFinance\finances.db` on Windows (so it syncs across devices),
@@ -63,11 +72,21 @@ history merchant-key lookup + few-shot, then LLM), `recurring` (subscription det
   inside `{}` expressions — a raw `"&#x...;"` string in an expression renders as literal text.
 - **Modals:** overlay `role="presentation"` closes on `e.target === e.currentTarget`; inner
   panel `role="dialog" aria-modal tabindex="-1"`; Escape close via a top-level `<svelte:window>`.
+- **Big transaction lists:** the transactions table renders a 200-row window
+  (`displayedTransactions`, Load more / Show all) — rendering every row of a large account
+  froze the UI (each row has an 89-option category `<select>`). Totals/selection still use the
+  full filtered set. Account lists are also prefetched into a `txCache` for instant switching.
+- **Balance column** auto-hides when the selected account has no running balance
+  (`hasBalance`, e.g. the credit card).
+- **Sidebar** collapses to an icons-only rail (chevron toggle, persisted in `localStorage`).
 
 ## Known caveats
-- **Net worth** (`get_net_worth_trend`) signs liabilities negative and carries forward each
-  account's last monthly `balance`. If a bank stored a credit-card balance as negative, that
-  account may read oddly — verify against real data; the sign convention is easy to flip.
+- **Net worth** (`get_net_worth_trend`) returns `assets` and `liabilities` per month
+  separately (liability = positive amount owed); net_worth = assets − liabilities, carrying
+  forward each account's last monthly `balance`. The dashboard chart shades assets up /
+  liabilities down with a true net-worth line. Data gaps to know: the **Credit Card has no
+  `balance` data** in its CSVs, so its liability currently counts as $0; the **Home Loan only
+  has balances from ~Jun 2026**, so the line steps down when the loan first appears.
 - **Recurring detection** needs ≥3 occurrences and a regular cadence; thresholds are in
   `recurring.rs::classify`.
 
