@@ -60,6 +60,17 @@
     darkMode.update((v) => !v);
   }
 
+  // Collapsed (icons-only) sidebar, remembered across launches.
+  let collapsed = $state(false);
+  onMount(() => {
+    collapsed = localStorage.getItem("sidebarCollapsed") === "1";
+  });
+  function toggleCollapse() {
+    collapsed = !collapsed;
+    localStorage.setItem("sidebarCollapsed", collapsed ? "1" : "0");
+  }
+  const chevron = '<polyline points="15 18 9 12 15 6" />';
+
   // 1.7px-stroke line icons (viewBox 0 0 24 24, currentColor) per design handoff ICONS.md
   const icons: Record<string, string> = {
     dashboard:
@@ -103,7 +114,7 @@
 </script>
 
 <div class="app-layout" class:dark={$darkMode}>
-  <nav class="sidebar">
+  <nav class="sidebar" class:collapsed>
     <div class="brand">
       <span class="brand-mark">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{@html house}</svg>
@@ -114,14 +125,24 @@
       </button>
     </div>
 
+    <button
+      class="collapse-btn"
+      onclick={toggleCollapse}
+      aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+      title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">{@html chevron}</svg>
+      <span class="collapse-label">Collapse</span>
+    </button>
+
     <ul class="nav-list">
       {#each navItems as item}
         <li>
-          <a href={item.href} class="nav-item" class:active={isActive(item.href, item.exact)}>
+          <a href={item.href} class="nav-item" class:active={isActive(item.href, item.exact)} title={item.label}>
             <span class="nav-icon">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">{@html icons[item.icon]}</svg>
             </span>
-            {item.label}
+            <span class="nav-label">{item.label}</span>
           </a>
         </li>
       {/each}
@@ -254,6 +275,73 @@
     display: flex;
     flex-direction: column;
     padding: 22px 16px;
+    transition: width 0.18s ease, min-width 0.18s ease, padding 0.18s ease;
+  }
+  .sidebar.collapsed {
+    width: 66px;
+    min-width: 66px;
+    padding: 22px 10px;
+  }
+
+  .collapse-btn {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    width: 100%;
+    margin-bottom: 10px;
+    padding: 8px 14px;
+    border: none;
+    border-radius: var(--radius-pill);
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .collapse-btn:hover {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+  }
+  .collapse-btn svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    transition: transform 0.18s ease;
+  }
+  .collapsed .collapse-btn {
+    justify-content: center;
+    padding: 8px;
+  }
+  .collapsed .collapse-btn svg {
+    transform: rotate(180deg);
+  }
+
+  /* Collapsed (icons-only) state: hide text, centre the icons. */
+  .collapsed .brand {
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 0 0 18px;
+  }
+  .collapsed .brand-name,
+  .collapsed .collapse-label,
+  .collapsed .nav-label,
+  .collapsed .household-text,
+  .collapsed .update-text {
+    display: none;
+  }
+  .collapsed .theme-toggle {
+    margin-left: 0;
+  }
+  .collapsed .nav-item {
+    justify-content: center;
+    padding: 10px;
+  }
+  .collapsed .household,
+  .collapsed .update-banner {
+    justify-content: center;
+    padding: 11px 8px;
   }
 
   .brand {

@@ -430,6 +430,10 @@
 
   let subcategories = $derived(categories.filter((c) => c.parent_id !== null));
 
+  // Hide the Balance column for accounts that carry no running balance (e.g. the
+  // credit card, whose CSVs have none) — keeps it for Savings/Everyday/Home Loan.
+  let hasBalance = $derived(transactions.some((t) => t.balance != null));
+
   // Bulk selection + re-categorise.
   let selectedTxIds = $state<Set<number>>(new Set());
   let bulkCategoryId = $state<string>("");
@@ -632,9 +636,11 @@
             <th class="sortable" onclick={() => toggleSort("credit")}>
               Credit <span class="sort-icon">{sortIcon("credit")}</span>
             </th>
-            <th class="sortable" onclick={() => toggleSort("balance")}>
-              Balance <span class="sort-icon">{sortIcon("balance")}</span>
-            </th>
+            {#if hasBalance}
+              <th class="sortable" onclick={() => toggleSort("balance")}>
+                Balance <span class="sort-icon">{sortIcon("balance")}</span>
+              </th>
+            {/if}
             <th>Categorise</th>
           </tr>
         </thead>
@@ -648,7 +654,9 @@
               <td class="cell-desc">{tx.description}</td>
               <td class="cell-debit">{tx.debit > 0 ? fmt(tx.debit) : "-"}</td>
               <td class="cell-credit">{tx.credit > 0 ? fmt(tx.credit) : "-"}</td>
-              <td class="cell-balance">{fmt(tx.balance)}</td>
+              {#if hasBalance}
+                <td class="cell-balance">{fmt(tx.balance)}</td>
+              {/if}
               <td class="cell-category">
                 <select
                   class="cat-select"
