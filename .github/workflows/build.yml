@@ -2,6 +2,11 @@ name: Build Family Finance (Windows)
 on:
   push:
     branches: [main]
+    # Docs-only changes don't need a full installer build/release.
+    paths-ignore:
+      - "**.md"
+      - LICENSE
+      - .gitignore
   workflow_dispatch:
 
 jobs:
