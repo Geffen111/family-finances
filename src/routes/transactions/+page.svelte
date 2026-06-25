@@ -77,6 +77,12 @@
 
   let lastImport = $state<string | null>(null);
 
+  // All-time transactions cached per account so switching accounts (especially
+  // the large credit-card list) is instant after a one-time prefetch at launch.
+  // Only the unfiltered "all time" view is cached; date-filtered views query live.
+  let txCache = new Map<number, Transaction[]>();
+  let prefetching = $state(false);
+
   // "Import for which account?" prompt before the file picker.
   let showImportModal = $state(false);
   let importAccountId = $state<number>(0);
@@ -95,6 +101,10 @@
       if (accs.length > 0 && selectedAccountId === 0) {
         selectedAccountId = accs[0].id;
       }
+      // Warm the cache for every account in the background so later account
+      // switches are instant. The currently-selected one loads via its own
+      // effect; prefetch fills in the rest (largest, e.g. credit card, included).
+      prefetchAll(accs);
     });
     invoke<Category[]>("get_categories").then((cats) => {
       categories = cats;
@@ -112,13 +122,27 @@
     hasApiKey = key != null && key.length > 0;
   }
 
+  // True when the current view is the unfiltered, all-time list (the only shape
+  // we cache — date-filtered views always query live).
+  let unfiltered = $derived(!filterStart && !filterEnd);
+
   async function loadTransactions() {
+    // Serve instantly from the prefetch cache when we can.
+    if (unfiltered && txCache.has(selectedAccountId)) {
+      transactions = txCache.get(selectedAccountId)!;
+      uncategorisedCount = transactions.filter((t) => t.category_id == null).length;
+      selectedTxIds = new Set();
+      loadLastImport();
+      return;
+    }
     loading = true;
     try {
       const params: Record<string, unknown> = { accountId: selectedAccountId };
       if (filterStart) params.startDate = filterStart;
       if (filterEnd) params.endDate = filterEnd;
-      transactions = await invoke<Transaction[]>("get_transactions", params);
+      const rows = await invoke<Transaction[]>("get_transactions", params);
+      transactions = rows;
+      if (unfiltered) txCache.set(selectedAccountId, rows);
       uncategorisedCount = transactions.filter((t) => t.category_id == null).length;
       selectedTxIds = new Set();
       loadLastImport();
@@ -127,6 +151,32 @@
     } finally {
       loading = false;
     }
+  }
+
+  // Prefetch all-time transactions for every account into the cache. Runs in the
+  // background after launch; the pool is single-connection so we go one at a time.
+  async function prefetchAll(accs: Account[]) {
+    if (prefetching) return;
+    prefetching = true;
+    try {
+      for (const acc of accs) {
+        if (txCache.has(acc.id)) continue;
+        try {
+          const rows = await invoke<Transaction[]>("get_transactions", { accountId: acc.id });
+          txCache.set(acc.id, rows);
+        } catch {
+          // Ignore a single account's prefetch failure; it'll load on demand.
+        }
+      }
+    } finally {
+      prefetching = false;
+    }
+  }
+
+  // Drop cached lists after any change that alters the data, then reload.
+  function invalidateCache(...accountIds: number[]) {
+    if (accountIds.length === 0) txCache.clear();
+    else for (const id of accountIds) txCache.delete(id);
   }
 
   async function loadLastImport() {
@@ -184,6 +234,7 @@
           showToast(`Auto-applied ${autoApplied}; ${review.length} to review.`, "success");
         }
       } else {
+        invalidateCache();
         await loadTransactions();
         showToast(`Auto-applied ${autoApplied} categorisation${autoApplied === 1 ? "" : "s"}.`, "success");
       }
@@ -233,6 +284,7 @@
       const count = await invoke<number>("accept_categorisations", { suggestions: selected });
       showToast(`Accepted ${count} categorisation${count === 1 ? "" : "s"}.`, "success");
       showAiModal = false;
+      invalidateCache();
       await loadTransactions();
     } catch (e) {
       showToast(String(e), "error");
@@ -269,6 +321,7 @@
         const dupNote = res.skipped_duplicate > 0 ? ` (${res.skipped_duplicate} duplicate${res.skipped_duplicate === 1 ? "" : "s"} skipped)` : "";
         const acctName = accounts.find((a) => a.id === accountId)?.name ?? "account";
         showToast(`Imported ${res.imported} transaction${res.imported === 1 ? "" : "s"} into ${acctName}${dupNote}.`, "success");
+        invalidateCache(accountId);
         // Jump to the account we imported into so the user sees the result.
         if (accountId !== selectedAccountId) {
           selectedAccountId = accountId;
@@ -395,6 +448,7 @@
       showToast(`Updated ${count} transaction${count === 1 ? "" : "s"}.`, "success");
       selectedTxIds = new Set();
       bulkCategoryId = "";
+      invalidateCache(selectedAccountId);
       await loadTransactions();
     } catch (e) {
       showToast(String(e), "error");
@@ -416,6 +470,7 @@
       showToast(`Moved ${res.moved} transaction${res.moved === 1 ? "" : "s"} to ${targetName}${dupNote}.`, "success");
       selectedTxIds = new Set();
       moveAccountId = "";
+      invalidateCache(selectedAccountId, targetId);
       await loadTransactions();
     } catch (e) {
       showToast(String(e), "error");
@@ -434,6 +489,7 @@
         transactionId,
         categoryId,
       });
+      invalidateCache(selectedAccountId);
       await loadTransactions();
     } catch (e) {
       showToast(String(e), "error");

@@ -41,6 +41,8 @@
     month: string;
     label: string;
     net_worth: number;
+    assets: number;
+    liabilities: number;
   }
 
   interface Asset {
@@ -521,41 +523,79 @@
       if (!canvas) return;
       if (netWorthChart) netWorthChart.destroy();
       const accent = themeVar("--accent", "#7f9a6f");
+      const neg = themeVar("--neg", "#c77a5a");
       const grid = themeVar("--border-color", "#ece0cc");
       const tick = themeVar("--text-muted", "#a89f90");
       const series = chartSeries();
       const labels = netWorth.map((p) => p.label);
+      const manualTotal = assetList.reduce((s, a) => s + a.value, 0);
+      const hasLiabilities = netWorth.some((p) => p.liabilities > 0);
 
-      // Bottom band: net worth derived from account balances over time. Above it,
-      // one stacked band per manually-tracked asset (held flat across the period,
-      // since assets carry a single current value, not month-by-month history).
+      // Composition bands share the "comp" stack: assets stack upward from zero,
+      // liabilities (negative) stack downward, so the chart literally shows what
+      // you own above the line and what you owe below it. The bold "Net worth"
+      // line sits in its own stack so it reads as the true total (assets +
+      // manually-tracked assets − liabilities) rather than being stacked itself.
       const datasets: any[] = [
         {
-          label: "Accounts",
-          data: netWorth.map((p) => p.net_worth),
+          label: "Cash & accounts",
+          data: netWorth.map((p) => p.assets),
+          stack: "comp",
           borderColor: accent,
-          backgroundColor: withAlpha(accent, 0.5),
-          borderWidth: 2,
+          backgroundColor: withAlpha(accent, 0.45),
+          borderWidth: 1,
           pointRadius: 0,
           tension: 0.35,
           fill: true,
+          order: 3,
         },
       ];
+      // One stacked band per manually-tracked asset (held flat across the period,
+      // since assets carry a single current value, not month-by-month history).
       assetList.forEach((a, i) => {
-        const c = series[i % series.length];
+        const c = series[(i + 1) % series.length];
         datasets.push({
           label: a.name,
           data: labels.map(() => a.value),
+          stack: "comp",
           borderColor: c,
-          backgroundColor: withAlpha(c, 0.5),
-          borderWidth: 2,
+          backgroundColor: withAlpha(c, 0.45),
+          borderWidth: 1,
           pointRadius: 0,
           tension: 0,
           fill: true,
+          order: 3,
         });
       });
+      if (hasLiabilities) {
+        datasets.push({
+          label: "Liabilities (loans, cards)",
+          data: netWorth.map((p) => -p.liabilities),
+          stack: "comp",
+          borderColor: neg,
+          backgroundColor: withAlpha(neg, 0.4),
+          borderWidth: 1,
+          pointRadius: 0,
+          tension: 0.35,
+          fill: true,
+          order: 3,
+        });
+      }
+      // True net worth = account assets + manual assets − liabilities.
+      datasets.push({
+        label: "Net worth",
+        data: netWorth.map((p) => p.net_worth + manualTotal),
+        stack: "net",
+        borderColor: accent,
+        backgroundColor: "transparent",
+        borderWidth: 2.5,
+        pointRadius: 2,
+        pointBackgroundColor: accent,
+        tension: 0.35,
+        fill: false,
+        order: 0,
+      });
 
-      const stacked = assetList.length > 0;
       netWorthChart = new Chart(canvas, {
         type: "line",
         data: { labels, datasets },
@@ -564,17 +604,14 @@
           maintainAspectRatio: true,
           interaction: { intersect: false, mode: "index" },
           scales: {
-            y: { stacked, border: { display: false }, grid: { color: grid }, ticks: { color: tick, callback: (v: any) => fmt(v) } },
-            x: { stacked, border: { display: false }, grid: { display: false }, ticks: { color: tick } },
+            y: { stacked: true, border: { display: false }, grid: { color: grid }, ticks: { color: tick, callback: (v: any) => fmt(v) } },
+            x: { stacked: true, border: { display: false }, grid: { display: false }, ticks: { color: tick } },
           },
           plugins: {
-            legend: { display: stacked, position: "bottom", labels: { color: themeVar("--text-secondary", "#7b7468"), usePointStyle: true, pointStyle: "circle", boxWidth: 8 } },
+            legend: { position: "bottom", labels: { color: themeVar("--text-secondary", "#7b7468"), usePointStyle: true, pointStyle: "circle", boxWidth: 8 } },
             tooltip: {
               callbacks: {
                 label: (ctx: any) => `${ctx.dataset.label}: ${fmt(ctx.parsed.y ?? ctx.parsed)}`,
-                footer: stacked
-                  ? (items: any[]) => `Total: ${fmt(items.reduce((s, it) => s + (it.parsed.y ?? 0), 0))}`
-                  : undefined,
               },
             },
           },
@@ -736,7 +773,7 @@
         </ul>
         {#if netWorth.length > 0}
           <div class="assets-networth">
-            <span>Total net worth (accounts + assets)</span>
+            <span>Total net worth (assets + accounts − debts)</span>
             <strong>{fmt(totalNetWorth)}</strong>
           </div>
         {/if}

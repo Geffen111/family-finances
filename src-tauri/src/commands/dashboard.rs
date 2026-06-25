@@ -440,6 +440,11 @@ pub struct NetWorthPoint {
     pub month: String,
     pub label: String,
     pub net_worth: f64,
+    // Split so the dashboard can shade assets vs. liabilities separately.
+    // `assets` = sum of asset-account balances; `liabilities` = amount owed on
+    // liability accounts as a positive number; net_worth = assets - liabilities.
+    pub assets: f64,
+    pub liabilities: f64,
 }
 
 fn next_month(ym: &str) -> String {
@@ -501,17 +506,25 @@ pub async fn get_net_worth_trend(pool: State<'_, SqlitePool>) -> Result<Vec<NetW
     let mut result = Vec::new();
     let mut cur = first;
     loop {
-        let mut net_worth = 0.0;
+        let mut assets = 0.0;
+        let mut liabilities = 0.0;
         for (acct, balances) in &per_account {
             // Most recent balance for this account at or before `cur`.
             if let Some((_, bal)) = balances.range(..=cur.clone()).next_back() {
-                net_worth += bal * sign(*acct);
+                if sign(*acct) < 0.0 {
+                    // Liability balances are stored as a positive amount owed.
+                    liabilities += bal;
+                } else {
+                    assets += bal;
+                }
             }
         }
         result.push(NetWorthPoint {
             month: cur.clone(),
             label: month_label(&cur),
-            net_worth,
+            net_worth: assets - liabilities,
+            assets,
+            liabilities,
         });
         if cur == last {
             break;
