@@ -184,14 +184,19 @@
     if (prefetching) return;
     prefetching = true;
     try {
+      // Let the selected account's own load fire first; the background warm-up
+      // then fills the rest. WAL means these reads no longer block a foreground
+      // click, but yielding between accounts keeps the UI snappy regardless.
+      await new Promise((r) => setTimeout(r, 0));
       for (const acc of accs) {
-        if (txCache.has(acc.id)) continue;
+        if (acc.id === selectedAccountId || txCache.has(acc.id)) continue;
         try {
           const rows = await invoke<Transaction[]>("get_transactions", { accountId: acc.id });
           txCache.set(acc.id, rows);
         } catch {
           // Ignore a single account's prefetch failure; it'll load on demand.
         }
+        await new Promise((r) => setTimeout(r, 0));
       }
     } finally {
       prefetching = false;

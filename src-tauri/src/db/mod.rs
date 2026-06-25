@@ -1,6 +1,9 @@
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
+};
 use sqlx::SqlitePool;
 use std::path::PathBuf;
+use std::time::Duration;
 
 pub async fn init_db() -> SqlitePool {
     let db_path = get_db_path();
@@ -8,12 +11,20 @@ pub async fn init_db() -> SqlitePool {
         std::fs::create_dir_all(parent).expect("Failed to create db directory");
     }
 
+    // WAL lets readers run concurrently with each other (and with the occasional
+    // writer), so a background prefetch of one account's transactions no longer
+    // blocks the foreground query when the user clicks a different account on the
+    // single connection it used to share. busy_timeout rides out the brief lock a
+    // write takes instead of surfacing a "database is locked" error.
     let connect_opts = SqliteConnectOptions::new()
         .filename(&db_path)
-        .create_if_missing(true);
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .busy_timeout(Duration::from_secs(5));
 
     let pool = SqlitePoolOptions::new()
-        .max_connections(1)
+        .max_connections(4)
         .connect_with(connect_opts)
         .await
         .expect("Failed to connect to database");
