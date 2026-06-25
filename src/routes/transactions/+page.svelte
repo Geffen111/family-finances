@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { format, startOfMonth, subMonths } from "date-fns";
   import { showToast } from "$lib/stores/toast.svelte";
+  import CategoryCombobox from "$lib/components/CategoryCombobox.svelte";
 
   interface Account {
     id: number;
@@ -835,19 +836,11 @@
                   </button>
                 {:else}
                   <div class="cat-cell-inner">
-                    <select
-                      class="cat-select"
-                      value={tx.category_id ?? ""}
-                      onchange={(e) => {
-                        const val = (e.target as HTMLSelectElement).value;
-                        handleAssignCategory(tx.id, val ? Number(val) : null);
-                      }}
-                    >
-                      <option value="">Uncategorised</option>
-                      {#each subcategories as cat (cat.id)}
-                        <option value={cat.id}>{cat.path}</option>
-                      {/each}
-                    </select>
+                    <CategoryCombobox
+                      categories={subcategories}
+                      value={tx.category_id}
+                      onSelect={(id) => handleAssignCategory(tx.id, id)}
+                    />
                     {#if tx.debit > 0}
                       <button class="split-btn" title="Split this transaction" onclick={() => openSplitModal(tx)}>⊟</button>
                     {/if}

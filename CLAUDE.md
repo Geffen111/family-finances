@@ -88,9 +88,13 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
 - **Modals:** overlay `role="presentation"` closes on `e.target === e.currentTarget`; inner
   panel `role="dialog" aria-modal tabindex="-1"`; Escape close via a top-level `<svelte:window>`.
 - **Big transaction lists:** the transactions table renders a 200-row window
-  (`displayedTransactions`, Load more / Show all) — rendering every row of a large account
-  froze the UI (each row has an 89-option category `<select>`). Totals/selection still use the
-  full filtered set. Account lists are also prefetched into a `txCache` for instant switching.
+  (`displayedTransactions`, Load more / Show all). The per-row category picker is a
+  `CategoryCombobox` (`src/lib/components`) — a button that opens a searchable, fixed-position
+  menu — not a native `<select>`; the old select rendered all ~89 options for every row and
+  froze large accounts, so a closed combobox now renders no option nodes. Totals/selection
+  still use the full filtered set. Account lists are prefetched into a `txCache` for instant
+  switching. (The bulk-bar, split and AI-review pickers stay native `<select>`s — single
+  instances, no perf concern.)
 - **Balance column** auto-hides when the selected account has no running balance
   (`hasBalance`, e.g. the credit card).
 - **Sidebar** collapses to an icons-only rail (chevron toggle, persisted in `localStorage`).
