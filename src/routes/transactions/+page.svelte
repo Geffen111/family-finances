@@ -694,7 +694,7 @@
       {#if uncategorisedCount > 0}
         {#if !hasApiKey}
           <a href="/settings" class="btn btn-warning">
-            {uncategorisedCount} uncategorised \u2014 Set API Key
+            {uncategorisedCount} uncategorised — Set API Key
           </a>
         {:else}
           <button class="btn btn-ai" onclick={handleAiCategorise} disabled={aiProcessing}>
@@ -783,7 +783,7 @@
   {/if}
 
   {#if loading}
-    <p class="loading">Loading transactions\u2026</p>
+    <p class="loading">Loading transactions…</p>
   {:else if transactions.length === 0}
     <div class="empty-state">
       <p>No transactions yet. Import a CSV to get started.</p>
@@ -1070,11 +1070,11 @@
   .btn-ai { background: #7c3aed; color: #fff; border-color: #7c3aed; }
   .btn-ai:hover { background: #6d28d9; }
   .btn-warning { background: var(--amber); color: #fff; border-color: var(--amber); text-decoration: none; font-size: 0.875rem; padding: 0.5rem 1rem; border-radius: 10px; }
-  .btn-warning:hover { background: #b45309; }
+  .btn-warning:hover { background: var(--amber); filter: brightness(0.95); }
   .toast { position: fixed; top: 1rem; left: 50%; transform: translateX(-50%); z-index: 200; padding: 0.75rem 1.25rem; border-radius: 14px; font-size: 0.875rem; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15); animation: toast-in 0.2s ease-out; }
   @keyframes toast-in { from { opacity: 0; transform: translateX(-50%) translateY(-0.5rem); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
-  .toast-success { background: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
-  .toast-error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+  .toast-success { background: var(--accent-soft); color: var(--nav-active-fg); border: 1px solid var(--accent); }
+  .toast-error { background: var(--neg-soft); color: var(--neg); border: 1px solid var(--neg); }
   .account-selector { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
   .account-btn { padding: 0.5rem 1rem; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-card); color: var(--text-primary); font-size: 0.875rem; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
   .account-btn:hover { background: var(--bg-secondary); }
@@ -1178,7 +1178,7 @@
     border: 1px solid var(--border-color); border-radius: 14px; margin-bottom: 0.5rem;
     align-items: flex-start;
   }
-  .suggestion-accepted { background: #f0fdf4; border-color: #bbf7d0; }
+  .suggestion-accepted { background: var(--accent-soft); border-color: var(--accent); }
   .suggestion-check { padding-top: 0.25rem; }
   .suggestion-check input { width: 1.1rem; height: 1.1rem; cursor: pointer; }
   .suggestion-details { flex: 1; min-width: 0; }

@@ -305,7 +305,7 @@
   input:focus {
     outline: none;
     border-color: var(--accent);
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+    box-shadow: 0 0 0 3px var(--accent-soft);
   }
   .btn-row {
     display: flex;
@@ -346,8 +346,8 @@
     from { opacity: 0; transform: translateX(-50%) translateY(-0.5rem); }
     to { opacity: 1; transform: translateX(-50%) translateY(0); }
   }
-  .toast-success { background: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
-  .toast-error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+  .toast-success { background: var(--accent-soft); color: var(--nav-active-fg); border: 1px solid var(--accent); }
+  .toast-error { background: var(--neg-soft); color: var(--neg); border: 1px solid var(--neg); }
   .export-section {
     display: flex;
     flex-direction: column;

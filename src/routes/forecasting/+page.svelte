@@ -986,7 +986,7 @@
   .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
   .btn-primary:hover { background: var(--accent); }
   .btn-add { background: var(--accent); color: #fff; border-color: var(--accent); }
-  .btn-add:hover { background: #047857; }
+  .btn-add:hover { background: var(--accent); filter: brightness(0.95); }
   .btn-delete { background: var(--neg); color: #fff; border-color: var(--neg); }
   .btn-delete:hover { background: var(--neg); }
 
@@ -1006,8 +1006,8 @@
     from { opacity: 0; transform: translateX(-50%) translateY(-0.5rem); }
     to { opacity: 1; transform: translateX(-50%) translateY(0); }
   }
-  .toast-success { background: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
-  .toast-error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+  .toast-success { background: var(--accent-soft); color: var(--nav-active-fg); border: 1px solid var(--accent); }
+  .toast-error { background: var(--neg-soft); color: var(--neg); border: 1px solid var(--neg); }
 
   .empty-state {
     border: 2px dashed var(--border-color);
@@ -1046,7 +1046,7 @@
     text-align: left;
     font: inherit;
   }
-  .scenario-card:hover { border-color: #93c5fd; }
+  .scenario-card:hover { border-color: var(--accent); }
   .scenario-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(127,154,111,0.22); }
   .scenario-card-body { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
   .scenario-name { font-weight: 600; color: var(--text-primary); font-size: 0.95rem; }

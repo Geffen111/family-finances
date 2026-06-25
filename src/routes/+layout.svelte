@@ -220,6 +220,7 @@
     --nav-active-fg: #4f6b45;
     --pos: #6f9466;
     --neg: #c77a5a;
+    --neg-soft: rgba(199, 122, 90, 0.14);
     --amber: #c99a52;
     --track: #efe6d6;
     --app-shadow: 0 4px 16px rgba(80, 70, 50, 0.06);
@@ -250,6 +251,7 @@
     --nav-active-fg: #b9d2a7;
     --pos: #9dba8b;
     --neg: #db9c7c;
+    --neg-soft: rgba(219, 156, 124, 0.16);
     --amber: #e2a765;
     --track: #3b342b;
     --app-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
