@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { formatDate } from "$lib/format";
 
   interface SavingsGoal {
     id: number;
@@ -158,7 +159,7 @@
           </div>
           <div class="goal-foot">
             <span class="goal-pct">{Math.round(pct(g))}%</span>
-            {#if g.target_date}<span class="goal-date">by {g.target_date}</span>{/if}
+            {#if g.target_date}<span class="goal-date">by {formatDate(g.target_date)}</span>{/if}
             {#if g.current_amount < g.target_amount}
               <span class="goal-remaining">{fmt(g.target_amount - g.current_amount)} to go</span>
             {:else}

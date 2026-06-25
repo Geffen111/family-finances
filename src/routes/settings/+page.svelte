@@ -163,7 +163,7 @@
 
   <div class="setting-card">
     <label for="api-key">OpenRouter API Key</label>
-    <p class="hint">Required for AI categorisation and insights (Phases 4-5)</p>
+    <p class="hint">Required for AI categorisation, Ask and insights.</p>
     <input
       id="api-key"
       type="password"

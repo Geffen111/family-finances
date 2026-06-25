@@ -699,7 +699,7 @@
     <div class="filter-bar">
       <div class="period-switch">
         <button class="preset-btn" class:active={!showCustom && activePreset === "thisMonth"} onclick={() => setPreset("thisMonth")}>This Month</button>
-        <button class="preset-btn" class:active={!showCustom && activePreset === "lastMonth"} onclick={() => setPreset("lastMonth")}>Last</button>
+        <button class="preset-btn" class:active={!showCustom && activePreset === "lastMonth"} onclick={() => setPreset("lastMonth")}>Last Mo.</button>
         <button class="preset-btn" class:active={!showCustom && activePreset === "last3Months"} onclick={() => setPreset("last3Months")}>3M</button>
         <button class="preset-btn" class:active={!showCustom && activePreset === "last6Months"} onclick={() => setPreset("last6Months")}>6M</button>
         <button class="preset-btn" class:active={!showCustom && activePreset === "last24Months"} onclick={() => setPreset("last24Months")}>24M</button>

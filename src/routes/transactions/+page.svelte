@@ -66,6 +66,9 @@
 
   let filterStart = $state("");
   let filterEnd = $state("");
+  // Which date filter is active, so the matching button can be highlighted.
+  // "custom" covers a manually-picked From/To range.
+  let activePreset = $state<"thisMonth" | "last3Months" | "all" | "custom">("all");
 
   let toastMsg = $state("");
   let toastType = $state<"success" | "error">("success");
@@ -362,6 +365,7 @@
   }
 
   function setDatePreset(preset: string) {
+    activePreset = preset as typeof activePreset;
     const today = new Date();
     switch (preset) {
       case "thisMonth":
@@ -737,15 +741,15 @@
   <div class="filters">
     <label>
       From
-      <input type="date" bind:value={filterStart} onchange={applyFilterAndLoad} />
+      <input type="date" bind:value={filterStart} onchange={() => { activePreset = "custom"; applyFilterAndLoad(); }} />
     </label>
     <label>
       To
-      <input type="date" bind:value={filterEnd} onchange={applyFilterAndLoad} />
+      <input type="date" bind:value={filterEnd} onchange={() => { activePreset = "custom"; applyFilterAndLoad(); }} />
     </label>
-    <button class="btn btn-sm" onclick={() => { setDatePreset("thisMonth"); applyFilterAndLoad(); }}>This Month</button>
-    <button class="btn btn-sm" onclick={() => { setDatePreset("last3Months"); applyFilterAndLoad(); }}>Last 3 Months</button>
-    <button class="btn btn-sm" onclick={() => { setDatePreset("all"); applyFilterAndLoad(); }}>All Time</button>
+    <button class="btn btn-sm" class:btn-primary={activePreset === "thisMonth"} onclick={() => { setDatePreset("thisMonth"); applyFilterAndLoad(); }}>This Month</button>
+    <button class="btn btn-sm" class:btn-primary={activePreset === "last3Months"} onclick={() => { setDatePreset("last3Months"); applyFilterAndLoad(); }}>Last 3 Months</button>
+    <button class="btn btn-sm" class:btn-primary={activePreset === "all"} onclick={() => { setDatePreset("all"); applyFilterAndLoad(); }}>All Time</button>
     <input class="search-input" type="search" placeholder="Search description or amount…" bind:value={searchText} />
     {#if allTags.length > 0}
       <select class="tag-filter" bind:value={tagFilterId}>

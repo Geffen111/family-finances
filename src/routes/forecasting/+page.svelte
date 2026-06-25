@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
   import { darkMode } from "$lib/stores/theme.svelte";
+  import { formatDate } from "$lib/format";
 
   interface Scenario {
     id: number;
@@ -98,6 +99,9 @@
   let loadingAdjustments = $state(false);
 
   let showNewModal = $state(false);
+  let showDeleteScenario = $state(false);
+  let deleteScenarioId = $state(0);
+  let deleteScenarioName = $state("");
   let newName = $state("");
   let newDesc = $state("");
   let newHorizon = $state("monthly");
@@ -207,8 +211,14 @@
     }
   }
 
-  async function handleDelete(id: number) {
-    if (!confirm("Delete this scenario?")) return;
+  function openDeleteScenario(s: Scenario) {
+    deleteScenarioId = s.id;
+    deleteScenarioName = s.name;
+    showDeleteScenario = true;
+  }
+
+  async function confirmDeleteScenario() {
+    const id = deleteScenarioId;
     try {
       await invoke("delete_scenario", { id });
       showToast("Scenario deleted.", "success");
@@ -218,6 +228,7 @@
         defaults = null;
         excludedCategoryIds = [];
       }
+      showDeleteScenario = false;
       await loadScenarios();
     } catch (e) {
       showToast(String(e), "error");
@@ -285,7 +296,10 @@
     if (idx >= 0) {
       selectedForecastIds = selectedForecastIds.filter((i) => i !== id);
     } else {
-      if (selectedForecastIds.length >= 3) return;
+      if (selectedForecastIds.length >= 3) {
+        showToast("You can compare up to 3 scenarios at a time.", "error");
+        return;
+      }
       selectedForecastIds = [...selectedForecastIds, id];
     }
   }
@@ -527,6 +541,7 @@
   if (e.key !== "Escape") return;
   showNewModal = false;
   editingDefaults = false;
+  showDeleteScenario = false;
 }} />
 
 <div class="page">
@@ -571,9 +586,9 @@
               {#if s.description}
                 <span class="scenario-desc">{s.description}</span>
               {/if}
-              <span class="scenario-dates">{s.base_start_date} &rarr; {s.base_end_date}</span>
+              <span class="scenario-dates">{formatDate(s.base_start_date)} &rarr; {formatDate(s.base_end_date)}</span>
             </div>
-            <button class="btn btn-sm btn-delete" onclick={(e) => { e.stopPropagation(); handleDelete(s.id); }}>Delete</button>
+            <button class="btn btn-sm btn-delete" onclick={(e) => { e.stopPropagation(); openDeleteScenario(s); }}>Delete</button>
           </div>
         {/each}
       </div>
@@ -850,6 +865,10 @@
         </button>
       </div>
 
+      {#if !hasLiabilityData}
+        <p class="debt-hint">Add a balance for at least one debt (import a CSV that includes a running balance) to run the simulation.</p>
+      {/if}
+
       {#if debtPlan}
         {#if debtPlan.underwater}
           <div class="debt-warning">
@@ -956,6 +975,20 @@
       <div class="modal-actions">
         <button class="btn" onclick={() => { editingDefaults = false; }}>Cancel</button>
         <button class="btn btn-primary" onclick={saveDefaults}>Save</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Delete Scenario Confirmation -->
+{#if showDeleteScenario}
+  <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) showDeleteScenario = false; }}>
+    <div class="modal modal-sm" role="dialog" aria-modal="true" tabindex="-1">
+      <h2>Delete Scenario</h2>
+      <p>Delete <strong>{deleteScenarioName}</strong>? Its adjustments and defaults will be removed.</p>
+      <div class="modal-actions">
+        <button class="btn" onclick={() => { showDeleteScenario = false; }}>Cancel</button>
+        <button class="btn btn-delete" onclick={confirmDeleteScenario}>Delete</button>
       </div>
     </div>
   </div>
@@ -1157,6 +1190,7 @@
   .debt-section { margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border-color); }
   .debt-section h2 { font-size: 1.25rem; font-weight: 700; margin-bottom: 0.75rem; color: var(--text-primary); }
   .debt-intro { font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1rem; max-width: 60ch; }
+  .debt-hint { font-size: 0.8rem; color: var(--text-secondary); margin-top: -0.5rem; margin-bottom: 1rem; }
   .debt-terms { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1.25rem; }
   .debt-term-row {
     display: grid;

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { formatDate } from "$lib/format";
 
   interface RecurringCost {
     id: number;
@@ -196,7 +197,7 @@
             <span class="card-monthly">{fmt(c.monthly_cost)}<span class="per">/mo</span></span>
             {#if c.category_name}<span class="chip">{c.category_name}</span>{/if}
             {#if !c.active}<span class="chip chip-muted">Paused</span>{/if}
-            {#if c.next_due_date}<span class="card-due">next {c.next_due_date}</span>{/if}
+            {#if c.next_due_date}<span class="card-due">next {formatDate(c.next_due_date)}</span>{/if}
           </div>
           {#if c.notes}<p class="card-notes">{c.notes}</p>{/if}
         </div>

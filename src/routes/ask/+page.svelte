@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { formatDate } from "$lib/format";
 
   interface AskResponse {
     answer: string;
@@ -32,6 +33,15 @@
   let answer = $state<AskResponse | null>(null);
   let askError = $state("");
   let showWorking = $state(false);
+
+  // Ask and Insights both need the OpenRouter key; guide the user to Settings
+  // rather than letting the calls fail with a raw error.
+  let hasApiKey = $state(true);
+  $effect(() => {
+    invoke<string | null>("get_api_key").then((k) => {
+      hasApiKey = k != null && k.length > 0;
+    });
+  });
 
   const EXAMPLES = [
     "How much did I spend on Amazon in the last 12 months?",
@@ -141,6 +151,12 @@
 <div class="page">
   <h1>Ask</h1>
 
+  {#if !hasApiKey}
+    <div class="api-key-note">
+      Add your OpenRouter API key in <a href="/settings">Settings</a> to use Ask and AI Insights.
+    </div>
+  {/if}
+
   <section class="ask-section">
     <div class="ask-box">
       <textarea
@@ -150,14 +166,14 @@
         rows="2"
         onkeydown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); } }}
       ></textarea>
-      <button class="btn btn-primary ask-btn" onclick={ask} disabled={asking || !question.trim()}>
+      <button class="btn btn-primary ask-btn" onclick={ask} disabled={asking || !question.trim() || !hasApiKey}>
         {asking ? "Thinking…" : "Ask"}
       </button>
     </div>
 
     <div class="examples">
       {#each EXAMPLES as ex}
-        <button class="example-chip" onclick={() => useExample(ex)} disabled={asking}>{ex}</button>
+        <button class="example-chip" onclick={() => useExample(ex)} disabled={asking || !hasApiKey}>{ex}</button>
       {/each}
     </div>
 
@@ -216,7 +232,7 @@
           {/each}
         </select>
         {#if !insightsGenerated && !insightsLoading}
-          <button class="btn btn-primary" onclick={generateInsights}>Generate Insights</button>
+          <button class="btn btn-primary" onclick={generateInsights} disabled={!hasApiKey}>Generate Insights</button>
         {:else if insightsGenerated && !insightsLoading}
           <button class="btn" onclick={refreshInsights}>Refresh</button>
         {/if}
@@ -289,13 +305,13 @@
       {/if}
 
       <div class="insights-refresh-note">
-        <span>Last generated: {insights.generated_at}</span>
+        <span>Last generated: {formatDate(insights.generated_at)}</span>
         <button class="btn btn-sm" onclick={refreshInsights}>Refresh</button>
       </div>
     {:else if !insightsGenerated}
       <div class="insights-empty">
         <p>Generate your first AI insights report to get spending analysis and recommendations.</p>
-        <button class="btn btn-primary" onclick={generateInsights}>Generate Insights</button>
+        <button class="btn btn-primary" onclick={generateInsights} disabled={!hasApiKey}>Generate Insights</button>
       </div>
     {/if}
   </section>
@@ -304,6 +320,8 @@
 <style>
   .page { max-width: 1320px; margin: 0 auto; }
   h1 { font-size: 1.75rem; font-weight: 700; color: var(--text-primary); margin-bottom: 1.25rem; }
+  .api-key-note { margin-bottom: 1.25rem; padding: 0.75rem 1rem; border-radius: 12px; background: var(--neg-soft); border: 1px solid var(--neg); color: var(--text-primary); font-size: 0.85rem; }
+  .api-key-note a { color: var(--accent); font-weight: 600; }
   h2 { font-size: 1.25rem; font-weight: 700; color: var(--text-primary); margin: 0; }
 
   .btn { padding: 0.5rem 1rem; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-card); color: var(--text-primary); font-size: 0.875rem; cursor: pointer; }
