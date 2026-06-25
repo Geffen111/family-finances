@@ -59,7 +59,11 @@ CI quirks that are load-bearing — don't "simplify" these away:
 categories/notes), `categories` (CRUD, bulk assign, exclude toggle), `categorise` (AI:
 history merchant-key lookup + few-shot, then LLM), `recurring` (subscription detection),
 `dashboard` (summaries, spending, trends, budgets, net worth), `goals` (savings goals),
-`forecasting`, `insights`, `settings`, `export`. Register new commands in `src-tauri/src/lib.rs`.
+`forecasting`, `insights`, `settings`, `export`, `cashflow` (upcoming-bill
+projection + "safe to spend"), `debt` (snowball/avalanche payoff sim, uses
+`accounts.apr`/`min_payment`), `rules` (deterministic categorisation rules, run
+on import before the AI), `tags` (transaction tags), `splits` (transaction
+splitting). Register new commands in `src-tauri/src/lib.rs`.
 
 ## Conventions / gotchas
 - **Currency:** AUD, `Intl.NumberFormat("en-AU")`. Dates stored `YYYY-MM-DD`.
@@ -68,6 +72,17 @@ history merchant-key lookup + few-shot, then LLM), `recurring` (subscription det
   `NOT EXISTS (... exclude_from_budget = 1)` guard, not a join.
 - **`normalize_desc`** (`commands/categorise.rs`, `pub`) reduces a bank line to a stable
   merchant key; reused by recurring detection. Reuse it, don't reinvent.
+- **`tx_effective` view** (migration 15) explodes split transactions into one row per
+  split (split category + amount as `debit`) and passes non-split transactions through
+  unchanged. **Category-grouped reporting must read `tx_effective`, not `transactions`**
+  (spending by category/tree/trend, budget status + carryover, budget suggestions, top
+  category, forecast baseline, category movers). Overall income/expense totals and any
+  non-category aggregation still read the base `transactions` table (splits sum to the
+  debit, so totals are identical). Splits are debit-only and validated to sum to the
+  transaction's debit.
+- **Budget rollover:** `categories.rollover` flag; carryover is computed on the fly in
+  `get_budget_status` (monthly_budget × months since the category's first txn − spend
+  before the period), not stored.
 - **Emoji in Svelte:** put emoji in markup (browser decodes `&#x...;`) OR use `"\u{1F4C8}"`
   inside `{}` expressions — a raw `"&#x...;"` string in an expression renders as literal text.
 - **Modals:** overlay `role="presentation"` closes on `e.target === e.currentTarget`; inner
