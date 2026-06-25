@@ -135,6 +135,12 @@ pub async fn csv_import(
         imported += 1;
     }
 
+    // Auto-categorise freshly imported rows with any matching rules (offline,
+    // deterministic) before the user reaches for the AI categoriser.
+    if imported > 0 {
+        let _ = crate::commands::rules::apply_rules_internal(&pool, true, Some(account_id)).await;
+    }
+
     Ok(CsvImportResult {
         imported,
         skipped_duplicate,

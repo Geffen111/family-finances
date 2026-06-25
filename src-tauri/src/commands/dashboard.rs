@@ -73,7 +73,7 @@ pub async fn get_dashboard_summary(
 
     let mut top_base = String::from(
         "SELECT COALESCE(c.name, 'Uncategorised'), CAST(COALESCE(SUM(t.debit), 0) AS REAL) as total
-         FROM transactions t
+         FROM tx_effective t
          LEFT JOIN categories c ON t.category_id = c.id
          WHERE 1=1"
     );
@@ -111,7 +111,7 @@ pub async fn get_spending_by_category(
             CASE WHEN cp.name IS NOT NULL THEN cp.name || ' > ' || c.name ELSE COALESCE(c.name, 'Uncategorised') END,
             CAST(COALESCE(SUM(t.debit), 0) AS REAL),
             COUNT(*)
-         FROM transactions t
+         FROM tx_effective t
          LEFT JOIN categories c ON t.category_id = c.id
          LEFT JOIN categories cp ON c.parent_id = cp.id
          WHERE t.debit > 0"
@@ -172,7 +172,7 @@ pub async fn get_category_spending_tree(
     // NULL id row is uncategorised spend).
     let mut query = String::from(
         "SELECT t.category_id, CAST(COALESCE(SUM(t.debit), 0) AS REAL), COUNT(*)
-         FROM transactions t
+         FROM tx_effective t
          WHERE t.debit > 0",
     );
     query.push_str(EXCLUDE_BUDGET);
@@ -313,7 +313,7 @@ pub async fn get_spending_trend_by_category(
 ) -> Result<Vec<CategoryTrend>, String> {
     let mut query = String::from(
         "SELECT c.id, COALESCE(c.name, 'Uncategorised'), strftime('%Y-%m', t.date), CAST(COALESCE(SUM(t.debit), 0) AS REAL)
-         FROM transactions t
+         FROM tx_effective t
          LEFT JOIN categories c ON t.category_id = c.id
          WHERE 1=1"
     );
@@ -394,7 +394,7 @@ pub async fn get_budget_status(
     // filter lives inside a correlated subquery so categories with no
     // spending in the period still appear (actual = 0).
     let mut actual = String::from(
-        "CAST(COALESCE((SELECT SUM(t.debit) FROM transactions t WHERE t.category_id = c.id",
+        "CAST(COALESCE((SELECT SUM(t.debit) FROM tx_effective t WHERE t.category_id = c.id",
     );
     let mut params: Vec<String> = Vec::new();
     if let Some(sd) = &start_date {
@@ -474,7 +474,7 @@ async fn compute_carryover(
 ) -> Result<f64, String> {
     let row = sqlx::query_as::<_, (Option<String>, f64)>(
         "SELECT MIN(date), CAST(COALESCE(SUM(debit), 0) AS REAL)
-         FROM transactions WHERE category_id = ? AND date < ?",
+         FROM tx_effective WHERE category_id = ? AND date < ?",
     )
     .bind(category_id)
     .bind(start_date)
@@ -501,6 +501,122 @@ fn months_between(from: &str, to: &str) -> i64 {
         (Some((fy, fm)), Some((ty, tm))) => ((ty - fy) * 12 + (tm - fm)).max(0),
         _ => 0,
     }
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct IncomeSource {
+    pub category_name: String,
+    pub total: f64,
+    pub percentage: f64,
+}
+
+/// Income (credits) grouped by category over the period. Income isn't split, so
+/// this reads the base transactions table.
+#[tauri::command]
+pub async fn get_income_by_category(
+    pool: State<'_, SqlitePool>,
+    start_date: Option<String>,
+    end_date: Option<String>,
+) -> Result<Vec<IncomeSource>, String> {
+    let mut query = String::from(
+        "SELECT COALESCE(c.name, 'Uncategorised'), CAST(COALESCE(SUM(t.credit), 0) AS REAL) AS total
+         FROM transactions t
+         LEFT JOIN categories c ON t.category_id = c.id
+         WHERE t.credit > 0",
+    );
+    query.push_str(EXCLUDE_BUDGET);
+    let params = apply_date_filters(&mut query, &start_date, &end_date, "t");
+    query.push_str(" GROUP BY c.name HAVING total > 0 ORDER BY total DESC");
+
+    let mut q = sqlx::query_as::<_, (String, f64)>(&query);
+    for p in &params {
+        q = q.bind(p);
+    }
+    let rows = q.fetch_all(&*pool).await.map_err(|e| format!("DB query error: {}", e))?;
+    let grand: f64 = rows.iter().map(|r| r.1).sum();
+    Ok(rows
+        .into_iter()
+        .map(|(category_name, total)| IncomeSource {
+            category_name,
+            total,
+            percentage: if grand > 0.0 { (total / grand) * 100.0 } else { 0.0 },
+        })
+        .collect())
+}
+
+async fn movers_spend(
+    pool: &SqlitePool,
+    s: NaiveDate,
+    e: NaiveDate,
+) -> Result<Vec<(String, f64)>, String> {
+    sqlx::query_as::<_, (String, f64)>(
+        "SELECT COALESCE(c.name, 'Uncategorised'), CAST(COALESCE(SUM(t.debit), 0) AS REAL) AS total
+         FROM tx_effective t
+         LEFT JOIN categories c ON t.category_id = c.id
+         WHERE t.debit > 0 AND t.date >= ? AND t.date <= ?
+           AND NOT EXISTS (SELECT 1 FROM categories xc WHERE xc.id = t.category_id AND xc.exclude_from_budget = 1)
+         GROUP BY c.name",
+    )
+    .bind(s.format("%Y-%m-%d").to_string())
+    .bind(e.format("%Y-%m-%d").to_string())
+    .fetch_all(pool)
+    .await
+    .map_err(|err| format!("DB query error: {}", err))
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct CategoryMover {
+    pub category_name: String,
+    pub current: f64,
+    pub previous: f64,
+    pub delta: f64,
+}
+
+/// Biggest changes in category spend versus the immediately-preceding period of
+/// equal length. Needs an explicit window; `end_date` defaults to today.
+/// Split-aware (reads tx_effective).
+#[tauri::command]
+pub async fn get_category_movers(
+    pool: State<'_, SqlitePool>,
+    start_date: String,
+    end_date: Option<String>,
+) -> Result<Vec<CategoryMover>, String> {
+    let start = NaiveDate::parse_from_str(&start_date, "%Y-%m-%d")
+        .map_err(|_| "Invalid start_date".to_string())?;
+    let end = match &end_date {
+        Some(e) => NaiveDate::parse_from_str(e, "%Y-%m-%d").map_err(|_| "Invalid end_date".to_string())?,
+        None => chrono::Local::now().naive_local().date(),
+    };
+    if end < start {
+        return Err("end_date is before start_date".to_string());
+    }
+    // Previous window: same length, ending the day before `start`.
+    let span = end - start;
+    let prev_end = start - chrono::Duration::days(1);
+    let prev_start = prev_end - span;
+
+    let cur_rows = movers_spend(&pool, start, end).await?;
+    let prev_rows = movers_spend(&pool, prev_start, prev_end).await?;
+
+    let mut map: HashMap<String, (f64, f64)> = HashMap::new();
+    for (name, total) in cur_rows {
+        map.entry(name).or_default().0 = total;
+    }
+    for (name, total) in prev_rows {
+        map.entry(name).or_default().1 = total;
+    }
+    let mut movers: Vec<CategoryMover> = map
+        .into_iter()
+        .map(|(category_name, (current, previous))| CategoryMover {
+            category_name,
+            current,
+            previous,
+            delta: current - previous,
+        })
+        .collect();
+    movers.sort_by(|a, b| b.delta.abs().partial_cmp(&a.delta.abs()).unwrap());
+    movers.truncate(8);
+    Ok(movers)
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -538,7 +654,7 @@ pub async fn get_budget_suggestions(
                 CAST(COALESCE(SUM(t.debit), 0) AS REAL) AS spend
          FROM categories c
          LEFT JOIN categories cp ON c.parent_id = cp.id
-         JOIN transactions t ON t.category_id = c.id
+         JOIN tx_effective t ON t.category_id = c.id
              AND t.date >= ? AND t.date <= ?
          WHERE c.exclude_from_budget = 0
          GROUP BY c.id

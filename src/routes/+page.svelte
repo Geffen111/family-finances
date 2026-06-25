@@ -100,7 +100,22 @@
     bills: UpcomingBill[];
   }
 
+  interface IncomeSource {
+    category_name: string;
+    total: number;
+    percentage: number;
+  }
+
+  interface CategoryMover {
+    category_name: string;
+    current: number;
+    previous: number;
+    delta: number;
+  }
+
   let summary = $state<DashboardSummary | null>(null);
+  let incomeSources = $state<IncomeSource[]>([]);
+  let categoryMovers = $state<CategoryMover[]>([]);
   let categorySpending = $state<CategorySpending[]>([]);
   let monthlyTrends = $state<MonthlyTrend[]>([]);
   let categoryTrends = $state<CategoryTrend[]>([]);
@@ -220,6 +235,13 @@
       categoryTree = tree;
       const trendParams = { ...params };
       categoryTrends = await invoke<CategoryTrend[]>("get_spending_trend_by_category", trendParams);
+      incomeSources = await invoke<IncomeSource[]>("get_income_by_category", params);
+      // Movers need an explicit window start; skip for the all-time view.
+      if (params.startDate) {
+        categoryMovers = await invoke<CategoryMover[]>("get_category_movers", params);
+      } else {
+        categoryMovers = [];
+      }
     } catch (e) {
       error = String(e);
     } finally {
@@ -935,6 +957,44 @@
     </a>
   {/if}
 
+  {#if !loading && (incomeSources.length > 0 || categoryMovers.length > 0)}
+    <div class="reports-grid">
+      {#if incomeSources.length > 0}
+        <div class="report-card">
+          <h3>Income sources</h3>
+          <div class="report-list">
+            {#each incomeSources.slice(0, 8) as src (src.category_name)}
+              <div class="report-row">
+                <span class="report-name">{src.category_name}</span>
+                <div class="report-bar-track">
+                  <div class="report-bar" style="width: {src.percentage}%;"></div>
+                </div>
+                <span class="report-val">{fmt(src.total)}</span>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
+      {#if categoryMovers.length > 0}
+        <div class="report-card">
+          <h3>Biggest changes <span class="report-sub">vs previous period</span></h3>
+          <div class="report-list">
+            {#each categoryMovers as m (m.category_name)}
+              <div class="report-row mover-row">
+                <span class="report-name">{m.category_name}</span>
+                <span class="mover-prev">{fmt(m.previous)} → {fmt(m.current)}</span>
+                <span class="mover-delta" class:up={m.delta > 0} class:down={m.delta < 0}>
+                  {m.delta > 0 ? "▲" : m.delta < 0 ? "▼" : ""} {fmt(Math.abs(m.delta))}
+                </span>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
+    </div>
+  {/if}
+
 </div>
 
 <style>
@@ -1089,6 +1149,22 @@
   .recurring-summary-right { text-align: right; }
   .recurring-summary-amount { font-family: "Bitter", Georgia, serif; font-size: 1.3rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
   .recurring-summary-per { font-size: 0.78rem; color: var(--text-secondary); margin-left: 0.15rem; }
+
+  .reports-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.25rem; margin-top: 1.5rem; }
+  .report-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-card); padding: 1.25rem 1.5rem; box-shadow: var(--app-shadow); }
+  .report-card h3 { font-size: 1rem; font-weight: 600; color: var(--text-primary); margin-bottom: 1rem; }
+  .report-sub { font-size: 0.75rem; font-weight: 400; color: var(--text-secondary); }
+  .report-list { display: flex; flex-direction: column; gap: 0.6rem; }
+  .report-row { display: grid; grid-template-columns: 1fr 1.2fr auto; align-items: center; gap: 0.6rem; font-size: 0.82rem; }
+  .report-name { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .report-bar-track { height: 7px; background: var(--bg-secondary); border-radius: 999px; overflow: hidden; }
+  .report-bar { height: 100%; background: var(--c2, var(--accent)); border-radius: 999px; }
+  .report-val { font-variant-numeric: tabular-nums; color: var(--text-primary); white-space: nowrap; }
+  .mover-row { grid-template-columns: 1fr auto auto; }
+  .mover-prev { font-size: 0.75rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .mover-delta { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+  .mover-delta.up { color: var(--neg); }
+  .mover-delta.down { color: var(--pos); }
 
   .assets-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-card); padding: 1.5rem; box-shadow: var(--app-shadow); margin-top: 1.25rem; }
   .assets-card h3 { font-size: 1rem; font-weight: 600; color: var(--text-primary); margin-bottom: 0; }

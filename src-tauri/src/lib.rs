@@ -39,6 +39,8 @@ pub fn run() {
             commands::dashboard::get_monthly_trends,
             commands::dashboard::get_spending_trend_by_category,
             commands::dashboard::get_budget_suggestions,
+            commands::dashboard::get_income_by_category,
+            commands::dashboard::get_category_movers,
             commands::settings::save_api_key,
             commands::settings::get_api_key,
             commands::settings::save_household_name,
@@ -80,6 +82,18 @@ pub fn run() {
             commands::debt::list_liabilities,
             commands::debt::update_account_debt_terms,
             commands::debt::simulate_debt_payoff,
+            commands::rules::list_category_rules,
+            commands::rules::create_category_rule,
+            commands::rules::update_category_rule,
+            commands::rules::delete_category_rule,
+            commands::rules::apply_category_rules,
+            commands::tags::list_tags,
+            commands::tags::add_tag_to_transaction,
+            commands::tags::remove_tag_from_transaction,
+            commands::tags::get_tags_for_transactions,
+            commands::splits::get_transaction_splits,
+            commands::splits::set_transaction_splits,
+            commands::splits::get_split_transaction_ids,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

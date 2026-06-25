@@ -31,6 +31,16 @@
     current_budget: number | null;
   }
 
+  interface CategoryRule {
+    id: number;
+    match_type: string;
+    pattern: string;
+    category_id: number;
+    category_name: string | null;
+    priority: number;
+    active: boolean;
+  }
+
   let categories = $state<Category[]>([]);
   let budgetStatus = $state<BudgetStatus[]>([]);
   let loading = $state(false);
@@ -61,6 +71,12 @@
   let suggestLoading = $state(false);
   let suggestMonths = $state(3);
 
+  let rules = $state<CategoryRule[]>([]);
+  let ruleMatchType = $state("contains");
+  let rulePattern = $state("");
+  let ruleCategoryId = $state<number | null>(null);
+  let applyingRules = $state(false);
+
   let toastMsg = $state("");
   let toastType = $state<"success" | "error">("success");
   let toastVisible = $state(false);
@@ -79,6 +95,7 @@
     try {
       categories = await invoke<Category[]>("get_categories");
       await loadBudgets();
+      await loadRules();
     } catch (e) {
       showToast(String(e), "error");
     } finally {
@@ -95,6 +112,59 @@
     } catch (e) {
       budgetStatus = [];
     }
+  }
+
+  async function loadRules() {
+    try {
+      rules = await invoke<CategoryRule[]>("list_category_rules");
+    } catch (e) {
+      rules = [];
+    }
+  }
+
+  async function addRule() {
+    if (!rulePattern.trim() || ruleCategoryId == null) return;
+    try {
+      await invoke("create_category_rule", {
+        matchType: ruleMatchType,
+        pattern: rulePattern.trim(),
+        categoryId: ruleCategoryId,
+        priority: 0,
+        active: true,
+      });
+      rulePattern = "";
+      showToast("Rule added.", "success");
+      await loadRules();
+    } catch (e) {
+      showToast(String(e), "error");
+    }
+  }
+
+  async function deleteRule(id: number) {
+    try {
+      await invoke("delete_category_rule", { id });
+      await loadRules();
+    } catch (e) {
+      showToast(String(e), "error");
+    }
+  }
+
+  async function applyRulesNow() {
+    applyingRules = true;
+    try {
+      const n = await invoke<number>("apply_category_rules", { onlyUncategorised: true });
+      showToast(`Applied rules to ${n} transaction${n === 1 ? "" : "s"}.`, "success");
+    } catch (e) {
+      showToast(String(e), "error");
+    } finally {
+      applyingRules = false;
+    }
+  }
+
+  function ruleMatchLabel(t: string): string {
+    if (t === "equals") return "equals";
+    if (t === "starts_with") return "starts with";
+    return "contains";
   }
 
   function budgetColor(pct: number): string {
@@ -374,6 +444,52 @@
       </div>
     </div>
   {/if}
+
+  <div class="rules-section">
+    <div class="rules-head">
+      <div>
+        <h2>Auto-categorisation rules</h2>
+        <p class="rules-intro">Rules run on import (before the AI) and can be re-applied to uncategorised transactions.</p>
+      </div>
+      <button class="btn" onclick={applyRulesNow} disabled={applyingRules || rules.length === 0}>
+        {applyingRules ? "Applying…" : "Apply rules now"}
+      </button>
+    </div>
+
+    <div class="rule-form">
+      <span class="rule-when">If description</span>
+      <select bind:value={ruleMatchType}>
+        <option value="contains">contains</option>
+        <option value="starts_with">starts with</option>
+        <option value="equals">equals</option>
+      </select>
+      <input type="text" placeholder="e.g. WOOLWORTHS" bind:value={rulePattern} />
+      <span class="rule-then">→</span>
+      <select bind:value={ruleCategoryId}>
+        <option value={null}>Select category…</option>
+        {#each categories.filter((c) => c.parent_id !== null || childrenOf(c.id).length === 0) as cat (cat.id)}
+          <option value={cat.id}>{cat.path}</option>
+        {/each}
+      </select>
+      <button class="btn btn-primary" onclick={addRule} disabled={!rulePattern.trim() || ruleCategoryId == null}>Add rule</button>
+    </div>
+
+    {#if rules.length > 0}
+      <div class="rule-list">
+        {#each rules as r (r.id)}
+          <div class="rule-row">
+            <span class="rule-text">
+              <span class="rule-match">{ruleMatchLabel(r.match_type)}</span>
+              <strong>{r.pattern}</strong>
+              <span class="rule-arrow">→</span>
+              <span class="rule-cat">{r.category_name ?? "?"}</span>
+            </span>
+            <button class="btn btn-sm btn-delete" onclick={() => deleteRule(r.id)}>Delete</button>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  </div>
 </div>
 
 <!-- Add Modal -->
@@ -747,6 +863,20 @@
   .budget-figures { font-size: 0.8rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .budget-track { height: 8px; background: var(--bg-secondary); border-radius: 999px; overflow: hidden; }
   .budget-fill { height: 100%; border-radius: 999px; transition: width 0.3s; }
+  .rules-section { margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border-color); }
+  .rules-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1rem; }
+  .rules-head h2 { font-size: 1.25rem; font-weight: 700; color: var(--text-primary); margin-bottom: 0.25rem; }
+  .rules-intro { font-size: 0.8rem; color: var(--text-secondary); max-width: 55ch; }
+  .rule-form { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 1rem; }
+  .rule-form select, .rule-form input { padding: 0.4rem 0.55rem; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-card); color: var(--text-primary); font-size: 0.85rem; }
+  .rule-form input[type="text"] { flex: 1; min-width: 8rem; }
+  .rule-when, .rule-then { font-size: 0.85rem; color: var(--text-secondary); }
+  .rule-list { display: flex; flex-direction: column; gap: 0.4rem; }
+  .rule-row { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; padding: 0.45rem 0.7rem; border: 1px solid var(--border-color); border-radius: 8px; }
+  .rule-text { font-size: 0.85rem; color: var(--text-primary); display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+  .rule-match { color: var(--text-secondary); font-size: 0.78rem; }
+  .rule-arrow, .rule-cat { color: var(--text-secondary); }
+
   .budget-pct { display: inline-block; margin-top: 0.35rem; font-size: 0.75rem; font-weight: 600; }
   .budget-carry { display: block; margin-top: 0.2rem; font-size: 0.72rem; color: var(--pos); font-variant-numeric: tabular-nums; }
   .budget-carry.carry-neg { color: var(--neg); }

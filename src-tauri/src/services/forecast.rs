@@ -184,7 +184,7 @@ async fn compute_baselines(
                 COALESCE(c.name, 'Uncategorised') as category_name,
                 CAST(COALESCE(SUM(t.debit), 0) AS REAL) as total_debit,
                 CAST(COALESCE(SUM(t.credit), 0) AS REAL) as total_credit
-         FROM transactions t
+         FROM tx_effective t
          LEFT JOIN categories c ON t.category_id = c.id
          WHERE t.date >= ? AND t.date <= ?
            AND NOT EXISTS (SELECT 1 FROM categories xc WHERE xc.id = t.category_id AND xc.exclude_from_budget = 1)

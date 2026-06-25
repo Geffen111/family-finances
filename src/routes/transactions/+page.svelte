@@ -46,6 +46,11 @@
     reasoning: string;
   }
 
+  interface Tag {
+    id: number;
+    name: string;
+  }
+
   type SortKey = "date" | "description" | "debit" | "credit" | "balance";
   type SortDir = "asc" | "desc";
 
@@ -67,6 +72,24 @@
   let toastVisible = $state(false);
 
   let searchText = $state("");
+
+  // Tags: txTags maps a transaction id → its tags; loaded for the whole current
+  // account (data only — DOM stays windowed). allTags powers the filter + the
+  // datalist of existing tags when adding one.
+  let txTags = $state<Record<number, Tag[]>>({});
+  let allTags = $state<Tag[]>([]);
+  let tagFilterId = $state<number | null>(null);
+  let showTagModal = $state(false);
+  let tagModalTxId = $state<number>(0);
+  let tagInput = $state("");
+
+  // Splits: ids of split transactions in the current account (for the marker),
+  // plus the split-editor modal state.
+  let splitTxIds = $state<Set<number>>(new Set());
+  let showSplitModal = $state(false);
+  let splitTxId = $state<number>(0);
+  let splitTxDebit = $state<number>(0);
+  let splitRows = $state<{ category_id: number | null; amount: string }[]>([]);
 
   let aiProcessing = $state(false);
   let aiSuggestions = $state<CategorisationSuggestion[]>([]);
@@ -110,6 +133,7 @@
       categories = cats;
     });
     checkApiKey();
+    loadAllTags();
   });
 
   $effect(() => {
@@ -397,17 +421,157 @@
     })
   );
 
-  // Client-side search across description and amounts.
+  // Client-side search across description and amounts, plus an optional tag filter.
   let visibleTransactions = $derived.by(() => {
     const q = searchText.trim().toLowerCase();
-    if (!q) return sortedTransactions;
-    return sortedTransactions.filter(
+    let rows = sortedTransactions;
+    if (tagFilterId != null) {
+      rows = rows.filter((t) => (txTags[t.id] ?? []).some((tag) => tag.id === tagFilterId));
+    }
+    if (!q) return rows;
+    return rows.filter(
       (t) =>
         t.description.toLowerCase().includes(q) ||
         String(t.debit).includes(q) ||
         String(t.credit).includes(q),
     );
   });
+
+  async function loadAllTags() {
+    try {
+      allTags = await invoke<Tag[]>("list_tags");
+    } catch (e) {
+      allTags = [];
+    }
+  }
+
+  // Reload the id→tags map whenever the current account's transactions change.
+  $effect(() => {
+    const ids = transactions.map((t) => t.id);
+    if (ids.length === 0) {
+      txTags = {};
+      return;
+    }
+    invoke<Record<number, Tag[]>>("get_tags_for_transactions", { transactionIds: ids })
+      .then((m) => { txTags = m; })
+      .catch(() => { txTags = {}; });
+    loadSplitIds();
+  });
+
+  async function loadSplitIds() {
+    if (selectedAccountId === 0) return;
+    try {
+      const ids = await invoke<number[]>("get_split_transaction_ids", { accountId: selectedAccountId });
+      splitTxIds = new Set(ids);
+    } catch (e) {
+      splitTxIds = new Set();
+    }
+  }
+
+  async function openSplitModal(tx: Transaction) {
+    if (tx.debit <= 0) {
+      showToast("Only expense transactions can be split.", "error");
+      return;
+    }
+    splitTxId = tx.id;
+    splitTxDebit = tx.debit;
+    try {
+      const existing = await invoke<{ category_id: number | null; amount: number }[]>(
+        "get_transaction_splits",
+        { transactionId: tx.id },
+      );
+      splitRows = existing.length
+        ? existing.map((s) => ({ category_id: s.category_id, amount: String(s.amount) }))
+        : [
+            { category_id: tx.category_id, amount: tx.debit.toFixed(2) },
+            { category_id: null, amount: "" },
+          ];
+    } catch (e) {
+      splitRows = [{ category_id: tx.category_id, amount: tx.debit.toFixed(2) }, { category_id: null, amount: "" }];
+    }
+    showSplitModal = true;
+  }
+
+  function addSplitRow() {
+    splitRows = [...splitRows, { category_id: null, amount: "" }];
+  }
+  function removeSplitRow(i: number) {
+    splitRows = splitRows.filter((_, idx) => idx !== i);
+  }
+
+  let splitSum = $derived(
+    splitRows.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0),
+  );
+  let splitRemainder = $derived(splitTxDebit - splitSum);
+
+  async function saveSplits() {
+    const rows = splitRows
+      .filter((r) => r.amount && parseFloat(r.amount) > 0)
+      .map((r) => ({ category_id: r.category_id, amount: parseFloat(r.amount), notes: null }));
+    try {
+      await invoke("set_transaction_splits", { transactionId: splitTxId, splits: rows });
+      showToast(rows.length ? "Split saved." : "Split cleared.", "success");
+      showSplitModal = false;
+      await loadSplitIds();
+    } catch (e) {
+      showToast(String(e), "error");
+    }
+  }
+
+  async function clearSplits() {
+    try {
+      await invoke("set_transaction_splits", { transactionId: splitTxId, splits: [] });
+      showToast("Split cleared.", "success");
+      showSplitModal = false;
+      await loadSplitIds();
+    } catch (e) {
+      showToast(String(e), "error");
+    }
+  }
+
+  function openTagModal(txId: number) {
+    tagModalTxId = txId;
+    tagInput = "";
+    showTagModal = true;
+  }
+
+  async function addTag() {
+    const name = tagInput.trim();
+    if (!name) return;
+    try {
+      await invoke<Tag>("add_tag_to_transaction", { transactionId: tagModalTxId, tagName: name });
+      await refreshTags(tagModalTxId);
+      tagInput = "";
+      showTagModal = false;
+    } catch (e) {
+      showToast(String(e), "error");
+    }
+  }
+
+  async function removeTag(txId: number, tagId: number) {
+    try {
+      await invoke("remove_tag_from_transaction", { transactionId: txId, tagId });
+      await refreshTags(txId);
+    } catch (e) {
+      showToast(String(e), "error");
+    }
+  }
+
+  // Refresh tags for one transaction in place, plus the global tag list/filter.
+  async function refreshTags(txId: number) {
+    try {
+      const m = await invoke<Record<number, Tag[]>>("get_tags_for_transactions", {
+        transactionIds: [txId],
+      });
+      txTags = { ...txTags, [txId]: m[txId] ?? [] };
+      await loadAllTags();
+      if (tagFilterId != null && !allTags.some((t) => t.id === tagFilterId)) {
+        tagFilterId = null;
+      }
+    } catch (e) {
+      showToast(String(e), "error");
+    }
+  }
 
   let totalDebits = $derived(visibleTransactions.reduce((sum, t) => sum + t.debit, 0));
   let totalCredits = $derived(visibleTransactions.reduce((sum, t) => sum + t.credit, 0));
@@ -521,7 +685,7 @@
   }
 </script>
 
-<svelte:window onkeydown={(e) => { if (e.key === "Escape") { showAiModal = false; showImportModal = false; } }} />
+<svelte:window onkeydown={(e) => { if (e.key === "Escape") { showAiModal = false; showImportModal = false; showTagModal = false; showSplitModal = false; } }} />
 
 <div class="page">
   <div class="header">
@@ -583,6 +747,14 @@
     <button class="btn btn-sm" onclick={() => { setDatePreset("last3Months"); applyFilterAndLoad(); }}>Last 3 Months</button>
     <button class="btn btn-sm" onclick={() => { setDatePreset("all"); applyFilterAndLoad(); }}>All Time</button>
     <input class="search-input" type="search" placeholder="Search description or amount…" bind:value={searchText} />
+    {#if allTags.length > 0}
+      <select class="tag-filter" bind:value={tagFilterId}>
+        <option value={null}>All tags</option>
+        {#each allTags as tag (tag.id)}
+          <option value={tag.id}>#{tag.name}</option>
+        {/each}
+      </select>
+    {/if}
   </div>
 
   {#if selectedTxIds.size > 0}
@@ -651,26 +823,48 @@
                 <input type="checkbox" checked={selectedTxIds.has(tx.id)} onchange={() => toggleSelect(tx.id)} aria-label="Select transaction" />
               </td>
               <td class="cell-date">{tx.date}</td>
-              <td class="cell-desc">{tx.description}</td>
+              <td class="cell-desc">
+                <span class="desc-text">{tx.description}</span>
+                <span class="tag-chips">
+                  {#each txTags[tx.id] ?? [] as tag (tag.id)}
+                    <span class="tag-chip">
+                      #{tag.name}
+                      <button class="tag-x" title="Remove tag" onclick={() => removeTag(tx.id, tag.id)}>×</button>
+                    </span>
+                  {/each}
+                  <button class="tag-add" title="Add tag" onclick={() => openTagModal(tx.id)}>＋</button>
+                </span>
+              </td>
               <td class="cell-debit">{tx.debit > 0 ? fmt(tx.debit) : "-"}</td>
               <td class="cell-credit">{tx.credit > 0 ? fmt(tx.credit) : "-"}</td>
               {#if hasBalance}
                 <td class="cell-balance">{fmt(tx.balance)}</td>
               {/if}
               <td class="cell-category">
-                <select
-                  class="cat-select"
-                  value={tx.category_id ?? ""}
-                  onchange={(e) => {
-                    const val = (e.target as HTMLSelectElement).value;
-                    handleAssignCategory(tx.id, val ? Number(val) : null);
-                  }}
-                >
-                  <option value="">Uncategorised</option>
-                  {#each subcategories as cat (cat.id)}
-                    <option value={cat.id}>{cat.path}</option>
-                  {/each}
-                </select>
+                {#if splitTxIds.has(tx.id)}
+                  <button class="split-pill" onclick={() => openSplitModal(tx)}>
+                    Split across categories — edit
+                  </button>
+                {:else}
+                  <div class="cat-cell-inner">
+                    <select
+                      class="cat-select"
+                      value={tx.category_id ?? ""}
+                      onchange={(e) => {
+                        const val = (e.target as HTMLSelectElement).value;
+                        handleAssignCategory(tx.id, val ? Number(val) : null);
+                      }}
+                    >
+                      <option value="">Uncategorised</option>
+                      {#each subcategories as cat (cat.id)}
+                        <option value={cat.id}>{cat.path}</option>
+                      {/each}
+                    </select>
+                    {#if tx.debit > 0}
+                      <button class="split-btn" title="Split this transaction" onclick={() => openSplitModal(tx)}>⊟</button>
+                    {/if}
+                  </div>
+                {/if}
               </td>
             </tr>
           {/each}
@@ -804,6 +998,62 @@
   </div>
 {/if}
 
+{#if showSplitModal}
+  <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) showSplitModal = false; }}>
+    <div class="modal" role="dialog" aria-modal="true" tabindex="-1">
+      <h2>Split transaction</h2>
+      <p class="split-total-line">Transaction total: <strong>{fmt(splitTxDebit)}</strong></p>
+      <div class="split-rows">
+        {#each splitRows as row, i (i)}
+          <div class="split-row">
+            <select bind:value={row.category_id}>
+              <option value={null}>Uncategorised</option>
+              {#each subcategories as cat (cat.id)}
+                <option value={cat.id}>{cat.path}</option>
+              {/each}
+            </select>
+            <input type="number" step="0.01" min="0" placeholder="0.00" bind:value={row.amount} />
+            <button class="split-row-x" title="Remove" onclick={() => removeSplitRow(i)} disabled={splitRows.length <= 1}>×</button>
+          </div>
+        {/each}
+      </div>
+      <button class="btn btn-sm split-add-row" onclick={addSplitRow}>+ Add split</button>
+      <p class="split-remainder" class:split-bad={Math.abs(splitRemainder) > 0.01}>
+        Allocated {fmt(splitSum)} of {fmt(splitTxDebit)}
+        {#if Math.abs(splitRemainder) > 0.01}— {fmt(Math.abs(splitRemainder))} {splitRemainder > 0 ? "left" : "over"}{/if}
+      </p>
+      <div class="modal-actions">
+        <button class="btn" onclick={() => { showSplitModal = false; }}>Cancel</button>
+        <button class="btn" onclick={clearSplits}>Clear split</button>
+        <button class="btn btn-primary" onclick={saveSplits} disabled={Math.abs(splitRemainder) > 0.01}>Save</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if showTagModal}
+  <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) showTagModal = false; }}>
+    <div class="modal modal-sm" role="dialog" aria-modal="true" tabindex="-1">
+      <h2>Add tag</h2>
+      <input
+        class="tag-modal-input"
+        type="text"
+        placeholder="e.g. holiday-2026"
+        list="tag-suggestions"
+        bind:value={tagInput}
+        onkeydown={(e) => { if (e.key === "Enter") addTag(); }}
+      />
+      <datalist id="tag-suggestions">
+        {#each allTags as tag (tag.id)}<option value={tag.name}></option>{/each}
+      </datalist>
+      <div class="modal-actions">
+        <button class="btn" onclick={() => { showTagModal = false; }}>Cancel</button>
+        <button class="btn btn-primary" onclick={addTag} disabled={!tagInput.trim()}>Add</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   .page { max-width: 1320px; margin: 0 auto; }
   .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
@@ -855,7 +1105,30 @@
   .sort-icon { font-size: 0.7rem; margin-left: 0.25rem; color: var(--text-muted); }
   .tx-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--bg-secondary); }
   .cell-date { white-space: nowrap; color: var(--text-secondary); }
-  .cell-desc { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+  .cell-desc { max-width: 340px; color: var(--text-primary); }
+  .desc-text { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tag-chips { display: inline-flex; flex-wrap: wrap; gap: 0.25rem; align-items: center; margin-top: 0.2rem; }
+  .tag-chip { display: inline-flex; align-items: center; gap: 0.15rem; font-size: 0.68rem; color: var(--accent); background: var(--accent-soft, var(--bg-secondary)); border-radius: 999px; padding: 0.05rem 0.4rem; }
+  .tag-x { background: none; border: none; color: inherit; cursor: pointer; font-size: 0.85rem; line-height: 1; padding: 0; opacity: 0.7; }
+  .tag-x:hover { opacity: 1; }
+  .tag-add { background: none; border: 1px dashed var(--border-color); color: var(--text-secondary); cursor: pointer; font-size: 0.7rem; line-height: 1; border-radius: 999px; padding: 0.05rem 0.35rem; }
+  .tag-add:hover { color: var(--text-primary); border-color: var(--text-secondary); }
+  .tag-filter { padding: 0.4rem 0.6rem; border: 1px solid var(--border-color); border-radius: 10px; font-size: 0.85rem; background: var(--bg-card); color: var(--text-primary); }
+  .tag-modal-input { width: 100%; padding: 0.5rem 0.65rem; border: 1px solid var(--border-color); border-radius: 10px; font-size: 0.9rem; background: var(--bg-card); color: var(--text-primary); }
+
+  .cat-cell-inner { display: flex; align-items: center; gap: 0.3rem; }
+  .split-btn { background: none; border: 1px solid var(--border-color); border-radius: 6px; cursor: pointer; color: var(--text-secondary); font-size: 0.8rem; line-height: 1; padding: 0.25rem 0.4rem; }
+  .split-btn:hover { color: var(--text-primary); border-color: var(--text-secondary); }
+  .split-pill { width: 100%; text-align: left; background: var(--accent-soft, var(--bg-secondary)); border: 1px solid var(--border-color); border-radius: 8px; color: var(--accent); cursor: pointer; font-size: 0.8rem; padding: 0.4rem 0.6rem; }
+  .split-total-line { font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.75rem; }
+  .split-rows { display: flex; flex-direction: column; gap: 0.5rem; }
+  .split-row { display: grid; grid-template-columns: 1fr 7rem auto; gap: 0.5rem; align-items: center; }
+  .split-row select, .split-row input { padding: 0.4rem 0.55rem; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-card); color: var(--text-primary); font-size: 0.85rem; }
+  .split-row-x { background: none; border: none; color: var(--text-secondary); cursor: pointer; font-size: 1.1rem; line-height: 1; }
+  .split-row-x:disabled { opacity: 0.3; cursor: not-allowed; }
+  .split-add-row { margin-top: 0.5rem; }
+  .split-remainder { font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.6rem; font-variant-numeric: tabular-nums; }
+  .split-remainder.split-bad { color: var(--neg); }
   .cell-debit { text-align: right; color: var(--neg); font-variant-numeric: tabular-nums; }
   .cell-credit { text-align: right; color: var(--pos); font-variant-numeric: tabular-nums; }
   .cell-balance { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-primary); }
