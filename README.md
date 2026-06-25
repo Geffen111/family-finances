@@ -8,11 +8,13 @@ A local-first desktop app for tracking a household's money — accounts, spendin
 
 - **CSV import** per account, with duplicate-row detection so re-importing an overlapping statement won't double up.
 - **Multiple accounts** typed as assets or liabilities (savings, everyday, credit card, home loan…), with the ability to move transactions between accounts.
-- **Transactions** view with search, sort, bulk re-categorise, and a windowed table that stays fast on accounts with thousands of rows.
-- **AI categorisation** (optional) via [OpenRouter](https://openrouter.ai/) — suggests categories for unclear transactions and **learns from your own past choices** (by merchant, and by account number + amount for contextless transfers). High-confidence matches auto-apply; the rest you review.
+- **Transactions** view with search, sort, bulk re-categorise, a searchable category picker, **tags** and **transaction splitting** (one payment across several categories). A windowed table plus concurrent SQLite reads keep it responsive on accounts with thousands of rows, including instant switching between accounts.
+- **AI categorisation** (optional) via [OpenRouter](https://openrouter.ai/) — suggests categories for unclear transactions and **learns from your own past choices** (by merchant, and by account number + amount for contextless transfers). High-confidence matches auto-apply; the rest you review. Deterministic rules run first on import, before the AI.
 - **Dashboard** — spending breakdown, monthly income vs expenses, category trends, and a **net worth over time** chart that shades assets vs. liabilities (manually-tracked assets like the family home included, debts subtracted).
 - **Assets & investments** card feeding into net worth.
-- **Budgets** per category, **savings goals**, and **recurring / subscription detection**.
+- **Budgets** per category (with optional rollover), **savings goals**, and **recurring / subscription detection**.
+- **Cashflow** — upcoming-bill projection and a "safe to spend" figure.
+- **Debt payoff planner** — snowball / avalanche simulation from each account's APR and minimum payment.
 - **Forecasting** with adjustable scenarios.
 - **Ask** — a natural-language query page (hybrid text-to-SQL) that answers questions about your data and shows its working.
 - **Hearth** light/dark theme, configurable household name, and an in-app "update available" banner.
