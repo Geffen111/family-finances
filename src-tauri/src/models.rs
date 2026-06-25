@@ -18,6 +18,7 @@ pub struct Category {
     pub monthly_budget: Option<f64>,
     pub created_at: String,
     pub exclude_from_budget: bool,
+    pub rollover: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -28,6 +29,7 @@ pub struct CategoryWithPath {
     pub monthly_budget: Option<f64>,
     pub created_at: String,
     pub exclude_from_budget: bool,
+    pub rollover: bool,
     pub path: String,
 }
 

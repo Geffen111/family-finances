@@ -8,6 +8,7 @@
     monthly_budget: number | null;
     created_at: string;
     exclude_from_budget: boolean;
+    rollover: boolean;
     path: string;
   }
 
@@ -18,6 +19,16 @@
     monthly_budget: number;
     actual: number;
     percentage: number;
+    rollover: boolean;
+    carryover: number;
+    available: number;
+  }
+
+  interface BudgetSuggestion {
+    category_id: number;
+    path: string;
+    suggested: number;
+    current_budget: number | null;
   }
 
   let categories = $state<Category[]>([]);
@@ -33,15 +44,22 @@
   let formParentId = $state<number | null>(null);
   let formBudget = $state<string>("");
   let formExclude = $state(false);
+  let formRollover = $state(false);
 
   let editId = $state<number>(0);
   let editName = $state("");
   let editParentId = $state<number | null>(null);
   let editBudget = $state<string>("");
   let editExclude = $state(false);
+  let editRollover = $state(false);
 
   let deleteId = $state<number>(0);
   let deleteName = $state("");
+
+  let showSuggestModal = $state(false);
+  let suggestions = $state<BudgetSuggestion[]>([]);
+  let suggestLoading = $state(false);
+  let suggestMonths = $state(3);
 
   let toastMsg = $state("");
   let toastType = $state<"success" | "error">("success");
@@ -116,11 +134,64 @@
     input.click();
   }
 
+  async function openSuggestModal() {
+    showSuggestModal = true;
+    await loadSuggestions();
+  }
+
+  async function loadSuggestions() {
+    suggestLoading = true;
+    try {
+      suggestions = await invoke<BudgetSuggestion[]>("get_budget_suggestions", {
+        months: suggestMonths,
+      });
+    } catch (e) {
+      showToast(String(e), "error");
+      suggestions = [];
+    } finally {
+      suggestLoading = false;
+    }
+  }
+
+  async function applySuggestion(s: BudgetSuggestion) {
+    try {
+      await invoke("update_category", { id: s.category_id, monthlyBudget: s.suggested });
+      showToast(`Set ${s.path} to ${currencyFormat.format(s.suggested)}.`, "success");
+      suggestions = suggestions.map((x) =>
+        x.category_id === s.category_id ? { ...x, current_budget: s.suggested } : x,
+      );
+      await loadCategories();
+    } catch (e) {
+      showToast(String(e), "error");
+    }
+  }
+
+  async function applyAllSuggestions(onlyEmpty: boolean) {
+    const targets = onlyEmpty
+      ? suggestions.filter((s) => s.current_budget == null || s.current_budget === 0)
+      : suggestions;
+    if (targets.length === 0) {
+      showToast("Nothing to apply.", "success");
+      return;
+    }
+    try {
+      for (const s of targets) {
+        await invoke("update_category", { id: s.category_id, monthlyBudget: s.suggested });
+      }
+      showToast(`Updated ${targets.length} budget${targets.length === 1 ? "" : "s"}.`, "success");
+      showSuggestModal = false;
+      await loadCategories();
+    } catch (e) {
+      showToast(String(e), "error");
+    }
+  }
+
   function openAddModal() {
     formName = "";
     formParentId = null;
     formBudget = "";
     formExclude = false;
+    formRollover = false;
     showAddModal = true;
   }
 
@@ -134,6 +205,9 @@
       });
       if (formExclude) {
         await invoke("set_category_exclusion", { id: created.id, exclude: true });
+      }
+      if (formRollover) {
+        await invoke("set_category_rollover", { id: created.id, rollover: true });
       }
       showToast("Category created.", "success");
       showAddModal = false;
@@ -149,6 +223,7 @@
     editParentId = cat.parent_id;
     editBudget = cat.monthly_budget != null ? String(cat.monthly_budget) : "";
     editExclude = cat.exclude_from_budget;
+    editRollover = cat.rollover;
     showEditModal = true;
   }
 
@@ -162,6 +237,7 @@
         monthlyBudget: editBudget ? parseFloat(editBudget) : null,
       });
       await invoke("set_category_exclusion", { id: editId, exclude: editExclude });
+      await invoke("set_category_rollover", { id: editId, rollover: editRollover });
       showToast("Category updated.", "success");
       showEditModal = false;
       await loadCategories();
@@ -210,6 +286,7 @@
   showAddModal = false;
   showEditModal = false;
   showDeleteConfirm = false;
+  showSuggestModal = false;
 }} />
 
 <div class="page">
@@ -219,6 +296,7 @@
       <button class="btn btn-import" onclick={handleImportCsv} disabled={importing}>
         {importing ? "Importing\u2026" : "Import from CSV"}
       </button>
+      <button class="btn btn-suggest" onclick={openSuggestModal}>Suggest budgets</button>
       <button class="btn btn-add" onclick={openAddModal}>Add Category</button>
     </div>
   </div>
@@ -273,8 +351,11 @@
         {#each budgetStatus as b (b.category_id)}
           <div class="budget-item">
             <div class="budget-head">
-              <span class="budget-name">{b.path}</span>
-              <span class="budget-figures">{currencyFormat.format(b.actual)} / {currencyFormat.format(b.monthly_budget)}</span>
+              <span class="budget-name">
+                {b.path}
+                {#if b.rollover}<span class="rollover-badge" title="Unspent budget rolls over">rollover</span>{/if}
+              </span>
+              <span class="budget-figures">{currencyFormat.format(b.actual)} / {currencyFormat.format(b.rollover ? b.available : b.monthly_budget)}</span>
             </div>
             <div class="budget-track">
               <div class="budget-fill" style="width: {Math.min(b.percentage, 100)}%; background: {budgetColor(b.percentage)};"></div>
@@ -282,6 +363,12 @@
             <span class="budget-pct" style="color: {budgetColor(b.percentage)};">
               {Math.round(b.percentage)}%{b.percentage >= 100 ? " — over budget" : ""}
             </span>
+            {#if b.rollover && b.carryover !== 0}
+              <span class="budget-carry" class:carry-neg={b.carryover < 0}>
+                {b.carryover > 0 ? "+" : ""}{currencyFormat.format(b.carryover)} rolled over
+                ({currencyFormat.format(b.monthly_budget)}/mo)
+              </span>
+            {/if}
           </div>
         {/each}
       </div>
@@ -314,6 +401,10 @@
       <label class="checkbox-label">
         <input type="checkbox" bind:checked={formExclude} />
         Exclude from budgets &amp; totals (e.g. internal transfers)
+      </label>
+      <label class="checkbox-label">
+        <input type="checkbox" bind:checked={formRollover} />
+        Roll unspent budget over to the next month
       </label>
       <div class="modal-actions">
         <button class="btn" onclick={() => { showAddModal = false; }}>Cancel</button>
@@ -349,9 +440,59 @@
         <input type="checkbox" bind:checked={editExclude} />
         Exclude from budgets &amp; totals (e.g. internal transfers)
       </label>
+      <label class="checkbox-label">
+        <input type="checkbox" bind:checked={editRollover} />
+        Roll unspent budget over to the next month
+      </label>
       <div class="modal-actions">
         <button class="btn" onclick={() => { showEditModal = false; }}>Cancel</button>
         <button class="btn btn-primary" onclick={handleEdit} disabled={!editName.trim()}>Save</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Suggest Budgets Modal -->
+{#if showSuggestModal}
+  <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) showSuggestModal = false; }}>
+    <div class="modal modal-lg" role="dialog" aria-modal="true" tabindex="-1">
+      <h2>Suggested budgets</h2>
+      <p class="suggest-intro">
+        Based on average spending per category. Adjust the look-back window, then apply individually or in bulk.
+      </p>
+      <label class="suggest-window">
+        Look back
+        <select bind:value={suggestMonths} onchange={loadSuggestions}>
+          <option value={3}>3 months</option>
+          <option value={6}>6 months</option>
+          <option value={12}>12 months</option>
+        </select>
+      </label>
+
+      {#if suggestLoading}
+        <p class="loading">Calculating…</p>
+      {:else if suggestions.length === 0}
+        <p class="loading">No spending found in this window.</p>
+      {:else}
+        <div class="suggest-list">
+          {#each suggestions as s (s.category_id)}
+            <div class="suggest-row">
+              <span class="suggest-name">{s.path}</span>
+              <span class="suggest-figures">
+                <span class="suggest-current">{s.current_budget != null ? currencyFormat.format(s.current_budget) : "—"}</span>
+                <span class="suggest-arrow">→</span>
+                <span class="suggest-new">{currencyFormat.format(s.suggested)}</span>
+              </span>
+              <button class="btn btn-sm btn-primary" onclick={() => applySuggestion(s)}>Apply</button>
+            </div>
+          {/each}
+        </div>
+      {/if}
+
+      <div class="modal-actions">
+        <button class="btn" onclick={() => { showSuggestModal = false; }}>Close</button>
+        <button class="btn" onclick={() => applyAllSuggestions(true)} disabled={suggestions.length === 0}>Fill empty only</button>
+        <button class="btn btn-primary" onclick={() => applyAllSuggestions(false)} disabled={suggestions.length === 0}>Apply all</button>
       </div>
     </div>
   </div>
@@ -407,6 +548,7 @@
   .btn-import:hover { background: var(--accent); }
   .btn-add { background: var(--accent); color: #fff; border-color: var(--accent); }
   .btn-add:hover { background: #047857; }
+  .btn-suggest { background: var(--bg-card); color: var(--text-primary); }
   .btn-edit { background: var(--amber); color: #fff; border-color: var(--amber); }
   .btn-edit:hover { background: var(--amber); }
   .btn-delete { background: var(--neg); color: #fff; border-color: var(--neg); }
@@ -522,6 +664,21 @@
     width: 360px;
   }
 
+  .modal-lg {
+    width: 560px;
+  }
+
+  .suggest-intro { font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.75rem; }
+  .suggest-window { flex-direction: row !important; align-items: center; gap: 0.5rem !important; font-size: 0.85rem; margin-bottom: 1rem; }
+  .suggest-window select { padding: 0.35rem 0.5rem; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-card); color: var(--text-primary); }
+  .suggest-list { display: flex; flex-direction: column; gap: 0.4rem; max-height: 50vh; overflow-y: auto; }
+  .suggest-row { display: flex; align-items: center; gap: 0.75rem; padding: 0.45rem 0.6rem; border: 1px solid var(--border-color); border-radius: 8px; }
+  .suggest-name { flex: 1; font-size: 0.85rem; color: var(--text-primary); }
+  .suggest-figures { display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .suggest-current { color: var(--text-secondary); }
+  .suggest-arrow { color: var(--text-secondary); }
+  .suggest-new { color: var(--text-primary); font-weight: 600; }
+
   .modal label {
     display: flex;
     flex-direction: column;
@@ -591,4 +748,19 @@
   .budget-track { height: 8px; background: var(--bg-secondary); border-radius: 999px; overflow: hidden; }
   .budget-fill { height: 100%; border-radius: 999px; transition: width 0.3s; }
   .budget-pct { display: inline-block; margin-top: 0.35rem; font-size: 0.75rem; font-weight: 600; }
+  .budget-carry { display: block; margin-top: 0.2rem; font-size: 0.72rem; color: var(--pos); font-variant-numeric: tabular-nums; }
+  .budget-carry.carry-neg { color: var(--neg); }
+  .rollover-badge {
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 0.05rem 0.35rem;
+    margin-left: 0.4rem;
+    vertical-align: middle;
+  }
 </style>

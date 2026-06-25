@@ -410,7 +410,113 @@
     return first.categories.filter((c) => c.amount > 0);
   });
 
+  // --- Debt payoff planner ---
+  interface LiabilityAccount {
+    account_id: number;
+    name: string;
+    balance: number | null;
+    apr: number | null;
+    min_payment: number | null;
+  }
+  interface DebtPayoffLine {
+    account_id: number;
+    name: string;
+    starting_balance: number;
+    interest_paid: number;
+    payoff_month: number | null;
+  }
+  interface DebtPayoffPlan {
+    strategy: string;
+    extra_payment: number;
+    months_to_debt_free: number | null;
+    total_interest: number;
+    total_paid: number;
+    starting_balance: number;
+    debts: DebtPayoffLine[];
+    balance_trajectory: number[];
+    underwater: boolean;
+  }
+
+  let liabilities = $state<LiabilityAccount[]>([]);
+  let debtStrategy = $state<"avalanche" | "snowball">("avalanche");
+  let debtExtra = $state<string>("0");
+  let debtPlan = $state<DebtPayoffPlan | null>(null);
+  let debtLoading = $state(false);
+  let termEdits = $state<Record<number, { apr: string; min_payment: string }>>({});
+
+  async function loadLiabilities() {
+    try {
+      liabilities = await invoke<LiabilityAccount[]>("list_liabilities");
+      const edits: Record<number, { apr: string; min_payment: string }> = {};
+      for (const l of liabilities) {
+        edits[l.account_id] = {
+          apr: l.apr != null ? String(l.apr) : "",
+          min_payment: l.min_payment != null ? String(l.min_payment) : "",
+        };
+      }
+      termEdits = edits;
+    } catch (e) {
+      liabilities = [];
+    }
+  }
+
+  async function saveTerms(accountId: number) {
+    const edit = termEdits[accountId];
+    if (!edit) return;
+    try {
+      await invoke("update_account_debt_terms", {
+        accountId,
+        apr: edit.apr ? parseFloat(edit.apr) : null,
+        minPayment: edit.min_payment ? parseFloat(edit.min_payment) : null,
+      });
+      showToast("Saved.", "success");
+      await loadLiabilities();
+      if (debtPlan) await runDebtPlan();
+    } catch (e) {
+      showToast(String(e), "error");
+    }
+  }
+
+  async function runDebtPlan() {
+    debtLoading = true;
+    try {
+      debtPlan = await invoke<DebtPayoffPlan>("simulate_debt_payoff", {
+        extraPayment: debtExtra ? parseFloat(debtExtra) : 0,
+        strategy: debtStrategy,
+      });
+    } catch (e) {
+      debtPlan = null;
+      showToast(String(e), "error");
+    } finally {
+      debtLoading = false;
+    }
+  }
+
+  function monthsLabel(m: number | null): string {
+    if (m == null) return "—";
+    const y = Math.floor(m / 12);
+    const mo = m % 12;
+    if (y === 0) return `${mo} mo`;
+    if (mo === 0) return `${y} yr`;
+    return `${y} yr ${mo} mo`;
+  }
+
+  // Sparkline path for the remaining-balance trajectory.
+  function trajectoryPath(traj: number[], w: number, h: number): string {
+    if (traj.length < 2) return "";
+    const max = Math.max(...traj, 1);
+    const step = w / (traj.length - 1);
+    return traj
+      .map((v, i) => `${i === 0 ? "M" : "L"} ${(i * step).toFixed(1)} ${(h - (v / max) * h).toFixed(1)}`)
+      .join(" ");
+  }
+
+  let hasLiabilityData = $derived(
+    liabilities.some((l) => (l.balance ?? 0) > 0),
+  );
+
   onMount(() => {
+    loadLiabilities();
     return () => {
       if (lineChart) lineChart.destroy();
     };
@@ -693,6 +799,104 @@
       </div>
     {/if}
   </section>
+
+  <section class="debt-section">
+    <h2>Debt payoff planner</h2>
+    {#if liabilities.length === 0}
+      <div class="empty-state"><p>No liability accounts found.</p></div>
+    {:else}
+      <p class="debt-intro">
+        Set an APR and minimum payment for each debt, choose a strategy, and add any extra you can
+        put towards debt each month. Balances use each account's latest imported balance.
+      </p>
+
+      <div class="debt-terms">
+        {#each liabilities as l (l.account_id)}
+          <div class="debt-term-row">
+            <span class="debt-term-name">{l.name}</span>
+            <span class="debt-term-balance">
+              {l.balance != null ? fmt(l.balance) : "no balance"}
+            </span>
+            <label class="debt-term-field">
+              APR %
+              <input type="number" step="0.01" min="0" bind:value={termEdits[l.account_id].apr} />
+            </label>
+            <label class="debt-term-field">
+              Min/mo
+              <input type="number" step="1" min="0" bind:value={termEdits[l.account_id].min_payment} />
+            </label>
+            <button class="btn btn-sm" onclick={() => saveTerms(l.account_id)}>Save</button>
+          </div>
+        {/each}
+      </div>
+
+      <div class="debt-controls">
+        <div class="debt-strategy">
+          <button class="btn btn-toggle" class:active={debtStrategy === "avalanche"} onclick={() => { debtStrategy = "avalanche"; }}>
+            Avalanche
+            <span class="debt-toggle-sub">highest APR first</span>
+          </button>
+          <button class="btn btn-toggle" class:active={debtStrategy === "snowball"} onclick={() => { debtStrategy = "snowball"; }}>
+            Snowball
+            <span class="debt-toggle-sub">smallest balance first</span>
+          </button>
+        </div>
+        <label class="debt-extra">
+          Extra / month
+          <input type="number" step="10" min="0" bind:value={debtExtra} />
+        </label>
+        <button class="btn btn-primary" onclick={runDebtPlan} disabled={debtLoading || !hasLiabilityData}>
+          {debtLoading ? "Calculating…" : "Calculate"}
+        </button>
+      </div>
+
+      {#if debtPlan}
+        {#if debtPlan.underwater}
+          <div class="debt-warning">
+            At these payments the debt never clears — the interest outweighs the payments.
+            Increase the minimum payments or the extra amount.
+          </div>
+        {:else}
+          <div class="debt-results">
+            <div class="debt-stat">
+              <span class="debt-stat-label">Debt-free in</span>
+              <span class="debt-stat-value">{monthsLabel(debtPlan.months_to_debt_free)}</span>
+            </div>
+            <div class="debt-stat">
+              <span class="debt-stat-label">Total interest</span>
+              <span class="debt-stat-value">{fmt(debtPlan.total_interest)}</span>
+            </div>
+            <div class="debt-stat">
+              <span class="debt-stat-label">Total paid</span>
+              <span class="debt-stat-value">{fmt(debtPlan.total_paid)}</span>
+            </div>
+          </div>
+
+          {#if debtPlan.balance_trajectory.length > 1}
+            <svg class="debt-spark" viewBox="0 0 320 60" preserveAspectRatio="none" role="img" aria-label="Balance over time">
+              <path d={trajectoryPath(debtPlan.balance_trajectory, 320, 56)} fill="none" stroke="var(--accent)" stroke-width="2" />
+            </svg>
+          {/if}
+
+          <table class="debt-table">
+            <thead>
+              <tr><th>Debt</th><th class="num-col">Balance</th><th class="num-col">Interest</th><th class="num-col">Cleared</th></tr>
+            </thead>
+            <tbody>
+              {#each debtPlan.debts as d (d.account_id)}
+                <tr>
+                  <td>{d.name}</td>
+                  <td class="num-col">{fmt(d.starting_balance)}</td>
+                  <td class="num-col">{fmt(d.interest_paid)}</td>
+                  <td class="num-col">{monthsLabel(d.payoff_month)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
+      {/if}
+    {/if}
+  </section>
 </div>
 
 <!-- New Scenario Modal -->
@@ -948,4 +1152,42 @@
     gap: 0.5rem;
     margin-top: 1.25rem;
   }
+
+  /* Debt payoff planner */
+  .debt-section { margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border-color); }
+  .debt-section h2 { font-size: 1.25rem; font-weight: 700; margin-bottom: 0.75rem; color: var(--text-primary); }
+  .debt-intro { font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1rem; max-width: 60ch; }
+  .debt-terms { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1.25rem; }
+  .debt-term-row {
+    display: grid;
+    grid-template-columns: 1.5fr 1fr auto auto auto;
+    align-items: end;
+    gap: 0.75rem;
+    padding: 0.6rem 0.8rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-card, 12px);
+  }
+  .debt-term-name { font-size: 0.9rem; font-weight: 600; color: var(--text-primary); align-self: center; }
+  .debt-term-balance { font-size: 0.82rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; align-self: center; }
+  .debt-term-field { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.72rem; color: var(--text-secondary); }
+  .debt-term-field input { width: 6rem; padding: 0.35rem 0.5rem; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-card); color: var(--text-primary); }
+
+  .debt-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 1rem; margin-bottom: 1.25rem; }
+  .debt-strategy { display: flex; gap: 0.5rem; }
+  .btn-toggle { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.2; }
+  .btn-toggle.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .debt-toggle-sub { font-size: 0.68rem; opacity: 0.8; font-weight: 400; }
+  .debt-extra { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.72rem; color: var(--text-secondary); }
+  .debt-extra input { width: 8rem; padding: 0.4rem 0.5rem; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-card); color: var(--text-primary); }
+
+  .debt-results { display: flex; gap: 1.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .debt-stat { display: flex; flex-direction: column; }
+  .debt-stat-label { font-size: 0.75rem; color: var(--text-secondary); }
+  .debt-stat-value { font-family: "Bitter", Georgia, serif; font-size: 1.3rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+  .debt-spark { width: 100%; height: 60px; margin-bottom: 1rem; }
+  .debt-warning { padding: 0.8rem 1rem; border-radius: 10px; background: var(--neg-soft, rgba(200,60,60,0.1)); color: var(--neg); font-size: 0.85rem; }
+  .debt-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  .debt-table th, .debt-table td { padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border-color); text-align: left; color: var(--text-primary); }
+  .debt-table th { font-size: 0.75rem; color: var(--text-secondary); font-weight: 600; }
 </style>

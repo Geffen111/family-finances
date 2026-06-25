@@ -84,6 +84,22 @@
     monthly_cost: number;
   }
 
+  interface UpcomingBill {
+    name: string;
+    amount: number;
+    due_date: string;
+    category_name: string | null;
+    frequency: string;
+  }
+
+  interface SafeToSpend {
+    liquid: number;
+    upcoming_total: number;
+    safe_to_spend: number;
+    horizon_days: number;
+    bills: UpcomingBill[];
+  }
+
   let summary = $state<DashboardSummary | null>(null);
   let categorySpending = $state<CategorySpending[]>([]);
   let monthlyTrends = $state<MonthlyTrend[]>([]);
@@ -91,6 +107,7 @@
   let categoryTree = $state<CategorySpendingGroup[]>([]);
   let expandedCategories = $state<Set<number>>(new Set());
   let recurring = $state<RecurringCost[]>([]);
+  let cashflow = $state<SafeToSpend | null>(null);
   let netWorth = $state<NetWorthPoint[]>([]);
   let assets = $state<Asset[]>([]);
   let loading = $state(true);
@@ -459,6 +476,22 @@
     }
   }
 
+  async function loadCashflow() {
+    try {
+      cashflow = await invoke<SafeToSpend>("get_safe_to_spend", { days: 30 });
+    } catch (e) {
+      cashflow = null;
+    }
+  }
+
+  function billDateLabel(iso: string): string {
+    try {
+      return format(new Date(iso + "T00:00:00"), "EEE d MMM");
+    } catch {
+      return iso;
+    }
+  }
+
   async function loadNetWorth() {
     try {
       netWorth = await invoke<NetWorthPoint[]>("get_net_worth_trend");
@@ -623,6 +656,7 @@
   onMount(() => {
     fetchData();
     loadRecurring();
+    loadCashflow();
     loadNetWorth();
     loadAssets();
     return () => {
@@ -853,6 +887,38 @@
     {/if}
   {/if}
 
+  {#if cashflow && (cashflow.liquid !== 0 || cashflow.bills.length > 0)}
+    <div class="cashflow-card">
+      <div class="cashflow-head">
+        <div>
+          <span class="cashflow-label">Safe to spend</span>
+          <span class="cashflow-sub">after the next {cashflow.horizon_days} days of bills</span>
+        </div>
+        <span class="cashflow-amount" class:cashflow-neg={cashflow.safe_to_spend < 0}>
+          {fmt(cashflow.safe_to_spend)}
+        </span>
+      </div>
+      <div class="cashflow-breakdown">
+        <span>{fmt(cashflow.liquid)} liquid</span>
+        <span>&minus; {fmt(cashflow.upcoming_total)} upcoming bills</span>
+      </div>
+      {#if cashflow.bills.length > 0}
+        <div class="cashflow-bills">
+          {#each cashflow.bills.slice(0, 6) as bill (bill.name + bill.due_date)}
+            <div class="cashflow-bill">
+              <span class="cashflow-bill-date">{billDateLabel(bill.due_date)}</span>
+              <span class="cashflow-bill-name">{bill.name}</span>
+              <span class="cashflow-bill-amount">{fmt(bill.amount)}</span>
+            </div>
+          {/each}
+          {#if cashflow.bills.length > 6}
+            <div class="cashflow-more">+{cashflow.bills.length - 6} more</div>
+          {/if}
+        </div>
+      {/if}
+    </div>
+  {/if}
+
   {#if recurring.length > 0}
     <a href="/recurring" class="recurring-summary-card">
       <div class="recurring-summary-left">
@@ -980,6 +1046,27 @@
   .twisty.invisible { visibility: hidden; }
   .child-row { background: var(--bg-secondary); }
   .child-row .cat-name { color: var(--text-primary); }
+
+  .cashflow-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-card, 12px);
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.5rem;
+    box-shadow: var(--app-shadow);
+  }
+  .cashflow-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+  .cashflow-label { display: block; font-size: 0.9rem; font-weight: 700; color: var(--text-primary); }
+  .cashflow-sub { display: block; font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.1rem; }
+  .cashflow-amount { font-family: "Bitter", Georgia, serif; font-size: 1.5rem; font-weight: 700; color: var(--pos); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; white-space: nowrap; }
+  .cashflow-amount.cashflow-neg { color: var(--neg); }
+  .cashflow-breakdown { display: flex; gap: 1rem; font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.35rem; font-variant-numeric: tabular-nums; }
+  .cashflow-bills { margin-top: 0.75rem; padding-top: 0.6rem; border-top: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 0.3rem; }
+  .cashflow-bill { display: grid; grid-template-columns: 6rem 1fr auto; align-items: center; gap: 0.5rem; font-size: 0.8rem; }
+  .cashflow-bill-date { color: var(--text-secondary); }
+  .cashflow-bill-name { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cashflow-bill-amount { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+  .cashflow-more { font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.15rem; }
 
   .recurring-summary-card {
     display: flex;

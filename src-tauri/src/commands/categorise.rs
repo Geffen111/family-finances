@@ -105,7 +105,7 @@ pub async fn categorise_transactions(
     pool: State<'_, SqlitePool>,
 ) -> Result<Vec<CategorisationSuggestion>, String> {
     let categories = sqlx::query_as::<_, crate::models::Category>(
-        "SELECT id, name, parent_id, monthly_budget, created_at, exclude_from_budget FROM categories ORDER BY id"
+        "SELECT id, name, parent_id, monthly_budget, created_at, exclude_from_budget, rollover FROM categories ORDER BY id"
     )
     .fetch_all(&*pool)
     .await
@@ -125,6 +125,7 @@ pub async fn categorise_transactions(
             monthly_budget: parent.monthly_budget,
             created_at: parent.created_at.clone(),
             exclude_from_budget: parent.exclude_from_budget,
+            rollover: parent.rollover,
             path: parent_path,
         });
 
@@ -140,6 +141,7 @@ pub async fn categorise_transactions(
                     monthly_budget: child.monthly_budget,
                     created_at: child.created_at.clone(),
                     exclude_from_budget: child.exclude_from_budget,
+                    rollover: child.rollover,
                     path,
                 });
                 has_child = true;
