@@ -2,6 +2,8 @@
   import { page } from "$app/stores";
   import { darkMode } from "$lib/stores/theme.svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { onMount } from "svelte";
 
   let householdName = $state("Our Home");
   $effect(() => {
@@ -9,6 +11,50 @@
       if (name) householdName = name;
     });
   });
+
+  // --- Update check -------------------------------------------------------
+  // The CI publishes build-info.json (the commit it was built from) to the
+  // rolling "latest" GitHub release. We compare it to the commit baked into
+  // this build; if they differ, a newer build is available. Downloads happen
+  // by opening the release page in the browser (pick the right installer).
+  const REPO = "Geffen111/family-finances";
+  const RELEASES_URL = `https://github.com/${REPO}/releases/latest`;
+  const BUILD_INFO_URL = `https://github.com/${REPO}/releases/latest/download/build-info.json`;
+
+  let updateInfo = $state<{ commit: string; builtAt?: string } | null>(null);
+
+  async function checkForUpdate() {
+    // Unstamped local/dev builds can't meaningfully compare — skip silently.
+    if (typeof __APP_COMMIT__ === "undefined" || __APP_COMMIT__ === "dev") return;
+    try {
+      const res = await fetch(BUILD_INFO_URL, { cache: "no-store" });
+      if (!res.ok) return;
+      const info = await res.json();
+      if (info?.commit && info.commit !== __APP_COMMIT__) {
+        updateInfo = info;
+      }
+    } catch {
+      // Offline, repo still private, or no marker yet — no banner.
+    }
+  }
+
+  function formatBuiltAt(ts: string | undefined): string {
+    if (!ts) return "";
+    const d = new Date(ts);
+    return isNaN(d.getTime())
+      ? ""
+      : d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  }
+
+  async function openUpdate() {
+    try {
+      await openUrl(RELEASES_URL);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  onMount(checkForUpdate);
 
   function toggleDark() {
     darkMode.update((v) => !v);
@@ -81,13 +127,31 @@
       {/each}
     </ul>
 
-    <div class="household">
-      <span class="household-avatar">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{@html house}</svg>
-      </span>
-      <div class="household-text">
-        <span class="household-name">{householdName}</span>
-        <span class="household-sub">Household</span>
+    <div class="sidebar-footer">
+      {#if updateInfo}
+        <button class="update-banner" onclick={openUpdate} title="Open the download page">
+          <span class="update-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3v12" /><polyline points="7 10 12 15 17 10" /><path d="M5 20h14" />
+            </svg>
+          </span>
+          <div class="update-text">
+            <span class="update-title">Update available</span>
+            <span class="update-sub">
+              {formatBuiltAt(updateInfo.builtAt) ? `New build (${formatBuiltAt(updateInfo.builtAt)}) — click to get it` : "Click to download"}
+            </span>
+          </div>
+        </button>
+      {/if}
+
+      <div class="household">
+        <span class="household-avatar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{@html house}</svg>
+        </span>
+        <div class="household-text">
+          <span class="household-name">{householdName}</span>
+          <span class="household-sub">Household</span>
+        </div>
       </div>
     </div>
   </nav>
@@ -281,8 +345,71 @@
     height: 17px;
   }
 
-  .household {
+  .sidebar-footer {
     margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .update-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 11px 12px;
+    border-radius: 16px;
+    border: 1px solid var(--accent);
+    background: var(--accent-soft);
+    color: var(--text-primary);
+    cursor: pointer;
+    text-align: left;
+    width: 100%;
+    transition: filter 0.15s, transform 0.1s;
+    animation: update-in 0.25s ease-out;
+  }
+  .update-banner:hover {
+    filter: brightness(0.97);
+    transform: translateY(-1px);
+  }
+  @keyframes update-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .update-icon {
+    width: 30px;
+    height: 30px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .update-icon svg {
+    width: 16px;
+    height: 16px;
+  }
+  .update-text {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.2;
+    min-width: 0;
+  }
+  .update-title {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--nav-active-fg);
+  }
+  .update-sub {
+    font-size: 10.5px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .household {
     display: flex;
     align-items: center;
     gap: 10px;
