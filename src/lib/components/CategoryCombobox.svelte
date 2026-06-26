@@ -99,15 +99,20 @@
   });
 
   // Any scroll (capture phase catches the inner table) or resize closes the
-  // menu — simpler and more correct than trying to keep a fixed menu pinned.
+  // menu — but not when the scroll originates inside the menu itself (e.g.
+  // scrolling the category list via trackpad).
   $effect(() => {
     if (!open) return;
-    const close = () => closeMenu();
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
+    const onScroll = (e: Event) => {
+      if (menuEl && e.target instanceof Node && menuEl.contains(e.target)) return;
+      closeMenu();
+    };
+    const onResize = () => closeMenu();
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
     return () => {
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
     };
   });
 </script>
