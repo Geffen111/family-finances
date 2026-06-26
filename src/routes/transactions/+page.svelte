@@ -458,13 +458,12 @@
   // reactive flush and threw `state_unsafe_mutation` in a tight loop, freezing
   // the page for 10s+ on large accounts (and wedging all further clicks).
   async function loadAuxData(rows: Transaction[]) {
-    const ids = rows.map((t) => t.id);
-    if (ids.length === 0) {
+    if (rows.length === 0) {
       txTags = {};
     } else {
       try {
-        txTags = await invoke<Record<number, Tag[]>>("get_tags_for_transactions", {
-          transactionIds: ids,
+        txTags = await invoke<Record<number, Tag[]>>("get_account_tags", {
+          accountId: selectedAccountId,
         });
       } catch {
         txTags = {};
@@ -555,7 +554,7 @@
     if (!name) return;
     try {
       await invoke<Tag>("add_tag_to_transaction", { transactionId: tagModalTxId, tagName: name });
-      await refreshTags(tagModalTxId);
+      await refreshTags();
       tagInput = "";
       showTagModal = false;
     } catch (e) {
@@ -566,19 +565,18 @@
   async function removeTag(txId: number, tagId: number) {
     try {
       await invoke("remove_tag_from_transaction", { transactionId: txId, tagId });
-      await refreshTags(txId);
+      await refreshTags();
     } catch (e) {
       showToast(String(e), "error");
     }
   }
 
-  // Refresh tags for one transaction in place, plus the global tag list/filter.
-  async function refreshTags(txId: number) {
+  // Refresh the current account's tag map, plus the global tag list/filter.
+  async function refreshTags() {
     try {
-      const m = await invoke<Record<number, Tag[]>>("get_tags_for_transactions", {
-        transactionIds: [txId],
+      txTags = await invoke<Record<number, Tag[]>>("get_account_tags", {
+        accountId: selectedAccountId,
       });
-      txTags = { ...txTags, [txId]: m[txId] ?? [] };
       await loadAllTags();
       if (tagFilterId != null && !allTags.some((t) => t.id === tagFilterId)) {
         tagFilterId = null;

@@ -90,7 +90,7 @@ pub fn run() {
             commands::tags::list_tags,
             commands::tags::add_tag_to_transaction,
             commands::tags::remove_tag_from_transaction,
-            commands::tags::get_tags_for_transactions,
+            commands::tags::get_account_tags,
             commands::splits::get_transaction_splits,
             commands::splits::set_transaction_splits,
             commands::splits::get_split_transaction_ids,

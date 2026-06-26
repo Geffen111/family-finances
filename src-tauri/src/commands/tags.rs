@@ -79,34 +79,29 @@ pub async fn remove_tag_from_transaction(
     Ok(())
 }
 
-/// Tags for a batch of transactions, keyed by transaction id. The frontend
-/// renders only a window of rows, so it asks for just those ids.
+/// Tags for every transaction in an account, keyed by transaction id (only
+/// transactions that have at least one tag appear). Scoped by account so the
+/// query binds a single parameter — binding one placeholder per visible row
+/// would blow past SQLite's host-parameter limit on large accounts.
 #[tauri::command]
-pub async fn get_tags_for_transactions(
+pub async fn get_account_tags(
     pool: State<'_, SqlitePool>,
-    transaction_ids: Vec<i64>,
+    account_id: i64,
 ) -> Result<HashMap<i64, Vec<Tag>>, String> {
-    let mut map: HashMap<i64, Vec<Tag>> = HashMap::new();
-    if transaction_ids.is_empty() {
-        return Ok(map);
-    }
-
-    let placeholders = vec!["?"; transaction_ids.len()].join(",");
-    let sql = format!(
+    let rows = sqlx::query_as::<_, (i64, i64, String)>(
         "SELECT tt.transaction_id, t.id, t.name \
-         FROM transaction_tags tt JOIN tags t ON tt.tag_id = t.id \
-         WHERE tt.transaction_id IN ({placeholders}) \
-         ORDER BY t.name COLLATE NOCASE"
-    );
-    let mut q = sqlx::query_as::<_, (i64, i64, String)>(&sql);
-    for id in &transaction_ids {
-        q = q.bind(id);
-    }
-    let rows = q
-        .fetch_all(&*pool)
-        .await
-        .map_err(|e| format!("DB query error: {}", e))?;
+         FROM transaction_tags tt \
+         JOIN tags t ON tt.tag_id = t.id \
+         JOIN transactions tx ON tx.id = tt.transaction_id \
+         WHERE tx.account_id = ? \
+         ORDER BY t.name COLLATE NOCASE",
+    )
+    .bind(account_id)
+    .fetch_all(&*pool)
+    .await
+    .map_err(|e| format!("DB query error: {}", e))?;
 
+    let mut map: HashMap<i64, Vec<Tag>> = HashMap::new();
     for (tx_id, id, name) in rows {
         map.entry(tx_id).or_default().push(Tag { id, name });
     }
