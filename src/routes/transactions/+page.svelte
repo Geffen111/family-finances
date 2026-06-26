@@ -154,10 +154,7 @@
   async function loadTransactions() {
     // Serve instantly from the prefetch cache when we can.
     if (unfiltered && txCache.has(selectedAccountId)) {
-      transactions = txCache.get(selectedAccountId)!;
-      uncategorisedCount = transactions.filter((t) => t.category_id == null).length;
-      selectedTxIds = new Set();
-      loadLastImport();
+      applyLoadedRows(txCache.get(selectedAccountId)!);
       return;
     }
     loading = true;
@@ -166,16 +163,26 @@
       if (filterStart) params.startDate = filterStart;
       if (filterEnd) params.endDate = filterEnd;
       const rows = await invoke<Transaction[]>("get_transactions", params);
-      transactions = rows;
       if (unfiltered) txCache.set(selectedAccountId, rows);
-      uncategorisedCount = transactions.filter((t) => t.category_id == null).length;
-      selectedTxIds = new Set();
-      loadLastImport();
+      applyLoadedRows(rows);
     } catch (e) {
       showToast(String(e), "error");
     } finally {
       loading = false;
     }
+  }
+
+  // Commit a freshly-loaded list. Everything here is derived from the local
+  // `rows` argument — never from the reactive `transactions` we are assigning.
+  // Reading the same `$state` we write, from inside the load effect, re-entered
+  // Svelte's reactive flush and threw `state_unsafe_mutation` in a tight loop,
+  // freezing the page for 10s+ on large accounts (and wedging all clicks).
+  function applyLoadedRows(rows: Transaction[]) {
+    transactions = rows;
+    uncategorisedCount = rows.filter((t) => t.category_id == null).length;
+    selectedTxIds = new Set();
+    loadLastImport();
+    loadAuxData(rows);
   }
 
   // Prefetch all-time transactions for every account into the cache. Runs in the
@@ -445,18 +452,26 @@
     }
   }
 
-  // Reload the id→tags map whenever the current account's transactions change.
-  $effect(() => {
-    const ids = transactions.map((t) => t.id);
+  // Reload the id→tags map and split markers for the current list. Called
+  // imperatively from loadTransactions — NOT from a $effect keyed on
+  // `transactions`. Writing this $state from such an effect re-entered Svelte's
+  // reactive flush and threw `state_unsafe_mutation` in a tight loop, freezing
+  // the page for 10s+ on large accounts (and wedging all further clicks).
+  async function loadAuxData(rows: Transaction[]) {
+    const ids = rows.map((t) => t.id);
     if (ids.length === 0) {
       txTags = {};
-      return;
+    } else {
+      try {
+        txTags = await invoke<Record<number, Tag[]>>("get_tags_for_transactions", {
+          transactionIds: ids,
+        });
+      } catch {
+        txTags = {};
+      }
     }
-    invoke<Record<number, Tag[]>>("get_tags_for_transactions", { transactionIds: ids })
-      .then((m) => { txTags = m; })
-      .catch(() => { txTags = {}; });
     loadSplitIds();
-  });
+  }
 
   async function loadSplitIds() {
     if (selectedAccountId === 0) return;
