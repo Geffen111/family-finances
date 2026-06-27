@@ -94,6 +94,7 @@ pub fn run() {
             commands::splits::get_transaction_splits,
             commands::splits::set_transaction_splits,
             commands::splits::get_split_transaction_ids,
+            commands::update::latest_build_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -18,9 +18,13 @@
   // rolling "latest" GitHub release. We compare it to the commit baked into
   // this build; if they differ, a newer build is available. Downloads happen
   // by opening the release page in the browser (pick the right installer).
-  const REPO = "Geffen111/family-finances";
-  const RELEASES_URL = `https://github.com/${REPO}/releases/latest`;
-  const BUILD_INFO_URL = `https://github.com/${REPO}/releases/latest/download/build-info.json`;
+  //
+  // The marker is fetched in Rust (latest_build_info) because the release-asset
+  // host (release-assets.githubusercontent.com) sends no CORS header, so a
+  // fetch() from the webview is silently blocked.
+  const OWNER = "Geffen111";
+  const REPO_NAME = "family-finances";
+  const RELEASES_URL = `https://github.com/${OWNER}/${REPO_NAME}/releases/latest`;
 
   let updateInfo = $state<{ commit: string; builtAt?: string } | null>(null);
 
@@ -28,14 +32,15 @@
     // Unstamped local/dev builds can't meaningfully compare — skip silently.
     if (typeof __APP_COMMIT__ === "undefined" || __APP_COMMIT__ === "dev") return;
     try {
-      const res = await fetch(BUILD_INFO_URL, { cache: "no-store" });
-      if (!res.ok) return;
-      const info = await res.json();
+      const info = await invoke<{ commit: string; builtAt?: string } | null>(
+        "latest_build_info",
+        { owner: OWNER, repo: REPO_NAME },
+      );
       if (info?.commit && info.commit !== __APP_COMMIT__) {
         updateInfo = info;
       }
     } catch {
-      // Offline, repo still private, or no marker yet — no banner.
+      // Offline, no release yet, or no marker — no banner.
     }
   }
 

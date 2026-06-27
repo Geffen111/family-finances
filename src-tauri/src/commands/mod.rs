@@ -18,3 +18,4 @@ pub mod debt;
 pub mod rules;
 pub mod tags;
 pub mod splits;
+pub mod update;
