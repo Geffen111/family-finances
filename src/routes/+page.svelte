@@ -154,6 +154,20 @@
   let showCustom = $state(false);
 
   let selectedTrendCategory = $state<string>("top3");
+  // Spending Breakdown pie: "all" = one slice per parent category; otherwise the
+  // stringified parent category id, drilling into that parent's subcategories.
+  let selectedBreakdown = $state<string>("all");
+
+  // Parent categories kept OUT of the Spending Breakdown pie. This is chart-only
+  // (internal transfers, loan repayments and investment-property/pass-through
+  // categories aren't "spending" for this view) — it does NOT touch income/
+  // expense totals, budgets or forecasts, which still use exclude_from_budget.
+  const BREAKDOWN_EXCLUDE = new Set<string>([
+    "Withdrawals & Transfers",
+    "Loan Repayments",
+    "Investment Property Expenses",
+    "Income",
+  ]);
 
   const currencyFormat = new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" });
   function fmt(val: number): string { return currencyFormat.format(val); }
@@ -281,17 +295,45 @@
     return categoryTreeTotal > 0 ? (v / categoryTreeTotal) * 100 : 0;
   }
 
-  let doughnutData = $derived.by(() => {
-    if (categorySpending.length === 0) return null;
-    const top8 = categorySpending.slice(0, 8);
-    const other = categorySpending.slice(8);
-    const labels = top8.map((c) => c.category_name);
-    const data = top8.map((c) => c.total);
-    if (other.length > 0) {
+  // Spending Breakdown is driven by the category tree so it can show parent
+  // totals or drill into one parent's children, and so it reuses the tree's
+  // budget-exclusion. On top of that we drop the transfer/loan/etc. parents.
+  let breakdownGroups = $derived(
+    categoryTree.filter((g) => g.total > 0 && !BREAKDOWN_EXCLUDE.has(g.name)),
+  );
+  // Parents worth drilling into (have subcategories) populate the dropdown.
+  let breakdownParents = $derived(
+    breakdownGroups.filter((g) => g.category_id != null && g.children.length > 0),
+  );
+
+  // Collapse a name/total list to at most 8 slices plus an "Other" bucket.
+  function toSlices(items: { name: string; total: number }[]): { labels: string[]; data: number[] } | null {
+    const rows = items.filter((i) => i.total > 0);
+    if (rows.length === 0) return null;
+    const top = rows.slice(0, 8);
+    const rest = rows.slice(8);
+    const labels = top.map((i) => i.name);
+    const data = top.map((i) => i.total);
+    if (rest.length > 0) {
       labels.push("Other");
-      data.push(other.reduce((s, c) => s + c.total, 0));
+      data.push(rest.reduce((s, i) => s + i.total, 0));
     }
     return { labels, data };
+  }
+
+  let doughnutData = $derived.by(() => {
+    // Drill into a specific parent's subcategories when one is selected and still
+    // present; otherwise fall back to the all-parents view.
+    if (selectedBreakdown !== "all") {
+      const g = breakdownGroups.find((grp) => String(grp.category_id) === selectedBreakdown);
+      if (g) {
+        const items = g.children.map((c) => ({ name: c.name, total: c.total }));
+        if (g.direct_total > 0) items.push({ name: `${g.name} (direct)`, total: g.direct_total });
+        items.sort((a, b) => b.total - a.total);
+        return toSlices(items);
+      }
+    }
+    return toSlices(breakdownGroups.map((g) => ({ name: g.name, total: g.total })));
   });
 
   $effect(() => {
@@ -433,22 +475,25 @@
       const grid = themeVar("--border-color", "#ece0cc");
       const tick = themeVar("--text-muted", "#a89f90");
 
-      const monthSet = new Set(filtered.map((ct) => ct.label));
-      const labels = [...monthSet].sort();
-      const grouped = new Map<string, { data: Map<string, number> }>();
+      // Order the x-axis by the yyyy-MM month key — sorting the display labels
+      // alphabetically scrambles them ("Apr 26" < "Feb 26" < "Jan 26"). Build the
+      // month sequence from `ct.month`, then map each to its human label.
+      const monthToLabel = new Map<string, string>();
+      for (const ct of filtered) monthToLabel.set(ct.month, ct.label);
+      const months = [...monthToLabel.keys()].sort();
+      const labels = months.map((m) => monthToLabel.get(m)!);
+      const grouped = new Map<string, Map<string, number>>();
       for (const ct of filtered) {
-        if (!grouped.has(ct.category_name)) {
-          grouped.set(ct.category_name, { data: new Map() });
-        }
-        grouped.get(ct.category_name)!.data.set(ct.label, ct.amount);
+        if (!grouped.has(ct.category_name)) grouped.set(ct.category_name, new Map());
+        grouped.get(ct.category_name)!.set(ct.month, ct.amount);
       }
 
       const datasets: any[] = [];
       let ci = 0;
-      for (const [name, g] of grouped) {
+      for (const [name, byMonth] of grouped) {
         datasets.push({
           label: name,
-          data: labels.map((l) => g.data.get(l) ?? 0),
+          data: months.map((m) => byMonth.get(m) ?? 0),
           borderColor: series[ci % series.length],
           backgroundColor: withAlpha(series[ci % series.length], 0.13),
           borderWidth: 2,
@@ -786,7 +831,15 @@
         </div>
       {/if}
       <div class="chart-card">
-        <h3>Spending Breakdown</h3>
+        <div class="chart-header">
+          <h3>Spending Breakdown</h3>
+          <select class="trend-select" bind:value={selectedBreakdown}>
+            <option value="all">All categories</option>
+            {#each breakdownParents as g (g.category_id)}
+              <option value={String(g.category_id)}>{g.name}</option>
+            {/each}
+          </select>
+        </div>
         <div class="chart-wrap"><canvas id="doughnutChart"></canvas></div>
       </div>
       <div class="chart-card">
