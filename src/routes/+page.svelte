@@ -13,13 +13,6 @@
     transaction_count: number;
   }
 
-  interface CategorySpending {
-    category_name: string;
-    category_path: string;
-    total: number;
-    percentage: number;
-    transaction_count: number;
-  }
 
   interface MonthlyTrend {
     month: string;
@@ -116,10 +109,12 @@
   let summary = $state<DashboardSummary | null>(null);
   let incomeSources = $state<IncomeSource[]>([]);
   let categoryMovers = $state<CategoryMover[]>([]);
-  let categorySpending = $state<CategorySpending[]>([]);
   let monthlyTrends = $state<MonthlyTrend[]>([]);
   let categoryTrends = $state<CategoryTrend[]>([]);
   let categoryTree = $state<CategorySpendingGroup[]>([]);
+  // Spending Breakdown has its own timeframe, so it fetches the tree separately
+  // from the page-controlled `categoryTree` used by the Category Spending table.
+  let breakdownTree = $state<CategorySpendingGroup[]>([]);
   let expandedCategories = $state<Set<number>>(new Set());
   let recurring = $state<RecurringCost[]>([]);
   let cashflow = $state<SafeToSpend | null>(null);
@@ -153,9 +148,19 @@
   let customEnd = $state("");
   let showCustom = $state(false);
 
-  let selectedTrendCategory = $state<string>("top3");
-  // Spending Breakdown pie: "all" = one slice per parent category; otherwise the
-  // stringified parent category id, drilling into that parent's subcategories.
+  // --- Independent chart timeframes (untied from the page date picker) --------
+  // Category Spending Trend: its own 6/12/24-month window + a multi-select set of
+  // category names (checkboxes) so several trend lines can show at once.
+  type TrendPreset = "6m" | "12m" | "24m";
+  let trendPreset = $state<TrendPreset>("12m");
+  let selectedTrendCats = $state<Set<string>>(new Set());
+  let trendCatsSeeded = false; // seed the top 3 once, then leave the user's picks
+
+  // Spending Breakdown: its own timeframe, plus the parent/subcategory drill.
+  type BreakdownPreset = "lastMonth" | "3m" | "6m" | "12m";
+  let breakdownPreset = $state<BreakdownPreset>("6m");
+  // "all" = one slice per parent category; otherwise the stringified parent
+  // category id, drilling into that parent's subcategories.
   let selectedBreakdown = $state<string>("all");
 
   // Parent categories kept OUT of the Spending Breakdown pie. This is chart-only
@@ -232,30 +237,48 @@
     return p;
   }
 
-  async function fetchData() {
+  // Start-date param for the last `n` calendar months (inclusive of this month).
+  function lastNMonthsParams(n: number): Record<string, unknown> {
+    return { startDate: format(startOfMonth(subMonths(new Date(), n - 1)), "yyyy-MM-dd") };
+  }
+  // Just the previous whole calendar month.
+  function lastMonthParams(): Record<string, unknown> {
+    const last = subMonths(new Date(), 1);
+    return {
+      startDate: format(startOfMonth(last), "yyyy-MM-dd"),
+      endDate: format(endOfMonth(last), "yyyy-MM-dd"),
+    };
+  }
+  function trendParams(): Record<string, unknown> {
+    return lastNMonthsParams(trendPreset === "6m" ? 6 : trendPreset === "12m" ? 12 : 24);
+  }
+  function breakdownParams(): Record<string, unknown> {
+    switch (breakdownPreset) {
+      case "lastMonth": return lastMonthParams();
+      case "3m": return lastNMonthsParams(3);
+      case "6m": return lastNMonthsParams(6);
+      case "12m": return lastNMonthsParams(12);
+    }
+  }
+
+  // Page date picker drives the lower section: summary cards, the Category
+  // Spending table, income sources and movers.
+  async function fetchPageData() {
     loading = true;
     error = "";
     const params = getParams();
     try {
-      const [s, c, m, tree] = await Promise.all([
+      const [s, tree] = await Promise.all([
         invoke<DashboardSummary>("get_dashboard_summary", params),
-        invoke<CategorySpending[]>("get_spending_by_category", params),
-        invoke<MonthlyTrend[]>("get_monthly_trends", params),
         invoke<CategorySpendingGroup[]>("get_category_spending_tree", params),
       ]);
       summary = s;
-      categorySpending = c;
-      monthlyTrends = m;
       categoryTree = tree;
-      const trendParams = { ...params };
-      categoryTrends = await invoke<CategoryTrend[]>("get_spending_trend_by_category", trendParams);
       incomeSources = await invoke<IncomeSource[]>("get_income_by_category", params);
       // Movers need an explicit window start; skip for the all-time view.
-      if (params.startDate) {
-        categoryMovers = await invoke<CategoryMover[]>("get_category_movers", params);
-      } else {
-        categoryMovers = [];
-      }
+      categoryMovers = params.startDate
+        ? await invoke<CategoryMover[]>("get_category_movers", params)
+        : [];
     } catch (e) {
       error = String(e);
     } finally {
@@ -263,23 +286,74 @@
     }
   }
 
+  // Spending Breakdown pie — its own timeframe.
+  async function fetchBreakdown() {
+    try {
+      breakdownTree = await invoke<CategorySpendingGroup[]>("get_category_spending_tree", breakdownParams());
+    } catch {
+      breakdownTree = [];
+    }
+  }
+
+  // Category Spending Trend — its own timeframe; seed the top 3 lines on first load.
+  async function fetchTrend() {
+    try {
+      categoryTrends = await invoke<CategoryTrend[]>("get_spending_trend_by_category", trendParams());
+      if (!trendCatsSeeded && categoryTrends.length > 0) {
+        const top3 = rankTrendCategories(categoryTrends).slice(0, 3);
+        selectedTrendCats = new Set(top3);
+        trendCatsSeeded = true;
+      }
+    } catch {
+      categoryTrends = [];
+    }
+  }
+
+  // Monthly Income vs Expenses — locked to the last 12 months.
+  async function fetchMonthly() {
+    try {
+      monthlyTrends = await invoke<MonthlyTrend[]>("get_monthly_trends", lastNMonthsParams(12));
+    } catch {
+      monthlyTrends = [];
+    }
+  }
+
+  // Category names present in trend data, ranked by total spend over the window.
+  function rankTrendCategories(rows: CategoryTrend[]): string[] {
+    const totals = new Map<string, number>();
+    for (const ct of rows) totals.set(ct.category_name, (totals.get(ct.category_name) ?? 0) + ct.amount);
+    return [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([name]) => name);
+  }
+  let trendCategoryOptions = $derived(rankTrendCategories(categoryTrends));
+
   function setPreset(preset: DatePreset) {
     activePreset = preset;
     showCustom = false;
-    fetchData();
+    fetchPageData();
   }
 
   function applyCustom() {
     showCustom = true;
-    fetchData();
+    fetchPageData();
+  }
+
+  function setTrendPreset(p: TrendPreset) {
+    trendPreset = p;
+    fetchTrend();
+  }
+  function setBreakdownPreset(p: BreakdownPreset) {
+    breakdownPreset = p;
+    fetchBreakdown();
+  }
+  function toggleTrendCat(name: string) {
+    const next = new Set(selectedTrendCats);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    selectedTrendCats = next;
   }
 
   function getFilteredTrends(): CategoryTrend[] {
-    if (selectedTrendCategory === "top3") {
-      const topNames = new Set(categorySpending.slice(0, 3).map((cs) => cs.category_name));
-      return categoryTrends.filter((ct) => topNames.has(ct.category_name));
-    }
-    return categoryTrends.filter((ct) => ct.category_name === selectedTrendCategory);
+    return categoryTrends.filter((ct) => selectedTrendCats.has(ct.category_name));
   }
 
   function toggleCategory(id: number | null) {
@@ -299,7 +373,7 @@
   // totals or drill into one parent's children, and so it reuses the tree's
   // budget-exclusion. On top of that we drop the transfer/loan/etc. parents.
   let breakdownGroups = $derived(
-    categoryTree.filter((g) => g.total > 0 && !BREAKDOWN_EXCLUDE.has(g.name)),
+    breakdownTree.filter((g) => g.total > 0 && !BREAKDOWN_EXCLUDE.has(g.name)),
   );
   // Parents worth drilling into (have subcategories) populate the dropdown.
   let breakdownParents = $derived(
@@ -390,7 +464,6 @@
       if (barChart) barChart.destroy();
       const pos = themeVar("--pos", "#6f9466");
       const neg = themeVar("--neg", "#c77a5a");
-      const accent = themeVar("--accent", "#7f9a6f");
       const grid = themeVar("--border-color", "#ece0cc");
       const tick = themeVar("--text-muted", "#a89f90");
       const labels = monthlyTrends.map((m) => m.label);
@@ -406,8 +479,8 @@
               borderWidth: 0,
               borderRadius: 5,
               borderSkipped: false,
-              barPercentage: 0.6,
-              categoryPercentage: 0.6,
+              barPercentage: 0.72,
+              categoryPercentage: 0.72,
             },
             {
               label: "Expenses",
@@ -416,40 +489,34 @@
               borderWidth: 0,
               borderRadius: 5,
               borderSkipped: false,
-              barPercentage: 0.6,
-              categoryPercentage: 0.6,
-            },
-            {
-              label: "Net",
-              data: monthlyTrends.map((m) => m.net),
-              type: "line",
-              borderColor: accent,
-              backgroundColor: "transparent",
-              borderWidth: 2,
-              pointBackgroundColor: accent,
-              pointRadius: 3,
-              tension: 0.35,
+              barPercentage: 0.72,
+              categoryPercentage: 0.72,
             },
           ],
         },
         options: {
+          // Horizontal bars (months down the y-axis) — spaces the months out
+          // better than vertical columns, and drops the removed Net line. A
+          // taller aspect gives the 12 months room to breathe.
+          indexAxis: "y",
           responsive: true,
           maintainAspectRatio: true,
+          aspectRatio: 1.5,
           interaction: { intersect: false, mode: "index" },
           scales: {
-            y: {
+            x: {
               beginAtZero: true,
               border: { display: false },
               grid: { color: grid },
               ticks: { color: tick, callback: (v: any) => fmt(v) },
             },
-            x: { border: { display: false }, grid: { display: false }, ticks: { color: tick } },
+            y: { border: { display: false }, grid: { display: false }, ticks: { color: tick } },
           },
           plugins: {
             legend: { position: "bottom", labels: { color: themeVar("--text-secondary", "#7b7468"), usePointStyle: true, pointStyle: "circle", boxWidth: 8 } },
             tooltip: {
               callbacks: {
-                label: (ctx: any) => `${ctx.dataset.label}: ${fmt(ctx.parsed.y ?? ctx.parsed)}`,
+                label: (ctx: any) => `${ctx.dataset.label}: ${fmt(ctx.parsed.x ?? ctx.parsed)}`,
               },
             },
           },
@@ -721,7 +788,10 @@
   });
 
   onMount(() => {
-    fetchData();
+    fetchPageData();
+    fetchBreakdown();
+    fetchTrend();
+    fetchMonthly();
     loadRecurring();
     loadCashflow();
     loadNetWorth();
@@ -741,37 +811,18 @@
       <h1>Welcome back</h1>
       <p class="page-subtitle">Here's how the household is tracking</p>
     </div>
-    <div class="filter-bar">
-      <div class="period-switch">
-        <button class="preset-btn" class:active={!showCustom && activePreset === "thisMonth"} onclick={() => setPreset("thisMonth")}>This Month</button>
-        <button class="preset-btn" class:active={!showCustom && activePreset === "lastMonth"} onclick={() => setPreset("lastMonth")}>Last Mo.</button>
-        <button class="preset-btn" class:active={!showCustom && activePreset === "last3Months"} onclick={() => setPreset("last3Months")}>3M</button>
-        <button class="preset-btn" class:active={!showCustom && activePreset === "last6Months"} onclick={() => setPreset("last6Months")}>6M</button>
-        <button class="preset-btn" class:active={!showCustom && activePreset === "last24Months"} onclick={() => setPreset("last24Months")}>24M</button>
-        <button class="preset-btn" class:active={!showCustom && activePreset === "ytd"} onclick={() => setPreset("ytd")}>YTD</button>
-        <button class="preset-btn" class:active={!showCustom && activePreset === "all"} onclick={() => setPreset("all")}>All</button>
-        <button class="preset-btn" class:active={showCustom} onclick={() => { showCustom = !showCustom; if (!showCustom) fetchData(); }}>Custom</button>
-      </div>
-      {#if showCustom}
-        <div class="custom-dates">
-          <label>From <input type="date" bind:value={customStart} /></label>
-          <label>To <input type="date" bind:value={customEnd} /></label>
-          <button class="btn btn-sm" onclick={applyCustom}>Apply</button>
-        </div>
-      {/if}
-    </div>
   </div>
 
   {#if loading}
     <div class="loading-grid">
+      <div class="charts-grid">
+        {#each Array(2) as _}
+          <div class="chart-card"><div class="skeleton-line skeleton-line-md" style="margin-bottom:1rem;"></div><div class="skeleton-block"></div></div>
+        {/each}
+      </div>
       <div class="summary-cards">
         {#each Array(4) as _}
           <div class="skeleton-card"><div class="skeleton-line skeleton-line-sm"></div><div class="skeleton-line skeleton-line-lg"></div></div>
-        {/each}
-      </div>
-      <div class="charts-grid">
-        {#each Array(3) as _}
-          <div class="chart-card"><div class="skeleton-line skeleton-line-md" style="margin-bottom:1rem;"></div><div class="skeleton-block"></div></div>
         {/each}
       </div>
     </div>
@@ -779,7 +830,7 @@
     <div class="error-state">
       <p>Error loading dashboard data.</p>
       <p class="error-detail">{error}</p>
-      <button class="btn" onclick={fetchData}>Retry</button>
+      <button class="btn" onclick={fetchPageData}>Retry</button>
     </div>
   {:else if summary && summary.transaction_count === 0}
     <div class="empty-state">
@@ -787,6 +838,88 @@
       <a href="/transactions" class="btn btn-primary">Go to Transactions</a>
     </div>
   {:else if summary}
+    <!-- Top row: spending breakdown + monthly income vs expenses.
+         Each has its own timeframe, untied from the page date picker below. -->
+    <div class="charts-grid">
+      <div class="chart-card">
+        <div class="chart-header">
+          <h3>Spending Breakdown</h3>
+          <div class="chart-controls">
+            <div class="mini-switch">
+              <button class="mini-btn" class:active={breakdownPreset === "lastMonth"} onclick={() => setBreakdownPreset("lastMonth")}>Last Mo.</button>
+              <button class="mini-btn" class:active={breakdownPreset === "3m"} onclick={() => setBreakdownPreset("3m")}>3M</button>
+              <button class="mini-btn" class:active={breakdownPreset === "6m"} onclick={() => setBreakdownPreset("6m")}>6M</button>
+              <button class="mini-btn" class:active={breakdownPreset === "12m"} onclick={() => setBreakdownPreset("12m")}>12M</button>
+            </div>
+            <select class="trend-select" bind:value={selectedBreakdown}>
+              <option value="all">All categories</option>
+              {#each breakdownParents as g (g.category_id)}
+                <option value={String(g.category_id)}>{g.name}</option>
+              {/each}
+            </select>
+          </div>
+        </div>
+        <div class="chart-wrap"><canvas id="doughnutChart"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <h3>Monthly Income vs Expenses <span class="chart-note">last 12 months</span></h3>
+        <div class="chart-wrap chart-wrap-tall"><canvas id="barChart"></canvas></div>
+      </div>
+    </div>
+
+    <!-- Category spending trend: own timeframe + multi-select category lines. -->
+    <div class="chart-card dash-block">
+      <div class="chart-header">
+        <h3>Category Spending Trend</h3>
+        <div class="chart-controls">
+          <div class="mini-switch">
+            <button class="mini-btn" class:active={trendPreset === "6m"} onclick={() => setTrendPreset("6m")}>6M</button>
+            <button class="mini-btn" class:active={trendPreset === "12m"} onclick={() => setTrendPreset("12m")}>12M</button>
+            <button class="mini-btn" class:active={trendPreset === "24m"} onclick={() => setTrendPreset("24m")}>24M</button>
+          </div>
+          <details class="cat-multi">
+            <summary>{selectedTrendCats.size} {selectedTrendCats.size === 1 ? "category" : "categories"}</summary>
+            <div class="cat-multi-menu">
+              {#if trendCategoryOptions.length === 0}
+                <p class="cat-multi-empty">No spending in this period.</p>
+              {/if}
+              {#each trendCategoryOptions as name (name)}
+                <label class="cat-multi-item">
+                  <input type="checkbox" checked={selectedTrendCats.has(name)} onchange={() => toggleTrendCat(name)} />
+                  <span>{name}</span>
+                </label>
+              {/each}
+            </div>
+          </details>
+        </div>
+      </div>
+      <div class="chart-wrap"><canvas id="lineChart"></canvas></div>
+    </div>
+
+    <!-- Page date picker — controls only the summary cards + tables below. -->
+    <div class="section-divider">
+      <span class="section-divider-label">Summary period</span>
+      <div class="filter-bar">
+        <div class="period-switch">
+          <button class="preset-btn" class:active={!showCustom && activePreset === "thisMonth"} onclick={() => setPreset("thisMonth")}>This Month</button>
+          <button class="preset-btn" class:active={!showCustom && activePreset === "lastMonth"} onclick={() => setPreset("lastMonth")}>Last Mo.</button>
+          <button class="preset-btn" class:active={!showCustom && activePreset === "last3Months"} onclick={() => setPreset("last3Months")}>3M</button>
+          <button class="preset-btn" class:active={!showCustom && activePreset === "last6Months"} onclick={() => setPreset("last6Months")}>6M</button>
+          <button class="preset-btn" class:active={!showCustom && activePreset === "last24Months"} onclick={() => setPreset("last24Months")}>24M</button>
+          <button class="preset-btn" class:active={!showCustom && activePreset === "ytd"} onclick={() => setPreset("ytd")}>YTD</button>
+          <button class="preset-btn" class:active={!showCustom && activePreset === "all"} onclick={() => setPreset("all")}>All</button>
+          <button class="preset-btn" class:active={showCustom} onclick={() => { showCustom = !showCustom; if (!showCustom) fetchPageData(); }}>Custom</button>
+        </div>
+        {#if showCustom}
+          <div class="custom-dates">
+            <label>From <input type="date" bind:value={customStart} /></label>
+            <label>To <input type="date" bind:value={customEnd} /></label>
+            <button class="btn btn-sm" onclick={applyCustom}>Apply</button>
+          </div>
+        {/if}
+      </div>
+    </div>
+
     <div class="summary-cards">
       <div class="card">
         <div class="card-top">
@@ -823,87 +956,12 @@
       </div>
     </div>
 
-    <div class="charts-grid">
-      {#if netWorth.length > 1}
-        <div class="chart-card chart-card-wide">
-          <h3>Net Worth Over Time</h3>
-          <div class="chart-wrap"><canvas id="netWorthChart"></canvas></div>
-        </div>
-      {/if}
-      <div class="chart-card">
-        <div class="chart-header">
-          <h3>Spending Breakdown</h3>
-          <select class="trend-select" bind:value={selectedBreakdown}>
-            <option value="all">All categories</option>
-            {#each breakdownParents as g (g.category_id)}
-              <option value={String(g.category_id)}>{g.name}</option>
-            {/each}
-          </select>
-        </div>
-        <div class="chart-wrap"><canvas id="doughnutChart"></canvas></div>
+    {#if netWorth.length > 1}
+      <div class="chart-card dash-block">
+        <h3>Net Worth Over Time</h3>
+        <div class="chart-wrap"><canvas id="netWorthChart"></canvas></div>
       </div>
-      <div class="chart-card">
-        <h3>Monthly Income vs Expenses</h3>
-        <div class="chart-wrap"><canvas id="barChart"></canvas></div>
-      </div>
-      <div class="chart-card chart-card-wide">
-        <div class="chart-header">
-          <h3>Category Spending Trend</h3>
-          <select class="trend-select" bind:value={selectedTrendCategory}>
-            <option value="top3">Top 3 Categories</option>
-            {#each categorySpending as cs}
-              <option value={cs.category_name}>{cs.category_name}</option>
-            {/each}
-          </select>
-        </div>
-        <div class="chart-wrap"><canvas id="lineChart"></canvas></div>
-      </div>
-    </div>
-
-    <div class="assets-card">
-      <div class="chart-header">
-        <h3>Assets &amp; Investments</h3>
-        {#if assets.length > 0}
-          <span class="assets-total">{fmt(assetsTotal)}</span>
-        {/if}
-      </div>
-
-      {#if assets.length > 0}
-        <ul class="assets-list">
-          {#each assets as a (a.id)}
-            <li class="asset-row">
-              <span class="asset-icon">{assetIcon(a.asset_type)}</span>
-              <span class="asset-name">{a.name}</span>
-              <span class="asset-type">{a.asset_type}</span>
-              <span class="asset-value">{fmt(a.value)}</span>
-              <button class="asset-del" title="Remove" aria-label="Remove asset" onclick={() => removeAsset(a.id)}>&times;</button>
-            </li>
-          {/each}
-        </ul>
-        {#if netWorth.length > 0}
-          <div class="assets-networth">
-            <span>Total net worth (assets + accounts − debts)</span>
-            <strong>{fmt(totalNetWorth)}</strong>
-          </div>
-        {/if}
-      {:else}
-        <p class="assets-empty">Add an asset like your home or investments to see it in your net worth.</p>
-      {/if}
-
-      <form class="asset-form" onsubmit={(e) => { e.preventDefault(); addAsset(); }}>
-        <input class="asset-input asset-input-name" type="text" placeholder="e.g. Family home" bind:value={newAssetName} />
-        <select class="asset-input asset-input-type" bind:value={newAssetType}>
-          {#each ASSET_TYPES as t}
-            <option value={t.value}>{t.icon} {t.label}</option>
-          {/each}
-        </select>
-        <input class="asset-input asset-input-value" type="number" step="0.01" placeholder="Value" bind:value={newAssetValue} />
-        <button class="btn btn-primary btn-sm" type="submit" disabled={assetSaving}>{assetSaving ? "Adding…" : "Add"}</button>
-      </form>
-      {#if assetError}
-        <p class="asset-error">{assetError}</p>
-      {/if}
-    </div>
+    {/if}
 
     {#if categoryTree.length > 0}
       <div class="cat-table-card">
@@ -960,6 +1018,51 @@
         </table>
       </div>
     {/if}
+
+    <div class="assets-card">
+      <div class="chart-header">
+        <h3>Assets &amp; Investments</h3>
+        {#if assets.length > 0}
+          <span class="assets-total">{fmt(assetsTotal)}</span>
+        {/if}
+      </div>
+
+      {#if assets.length > 0}
+        <ul class="assets-list">
+          {#each assets as a (a.id)}
+            <li class="asset-row">
+              <span class="asset-icon">{assetIcon(a.asset_type)}</span>
+              <span class="asset-name">{a.name}</span>
+              <span class="asset-type">{a.asset_type}</span>
+              <span class="asset-value">{fmt(a.value)}</span>
+              <button class="asset-del" title="Remove" aria-label="Remove asset" onclick={() => removeAsset(a.id)}>&times;</button>
+            </li>
+          {/each}
+        </ul>
+        {#if netWorth.length > 0}
+          <div class="assets-networth">
+            <span>Total net worth (assets + accounts − debts)</span>
+            <strong>{fmt(totalNetWorth)}</strong>
+          </div>
+        {/if}
+      {:else}
+        <p class="assets-empty">Add an asset like your home or investments to see it in your net worth.</p>
+      {/if}
+
+      <form class="asset-form" onsubmit={(e) => { e.preventDefault(); addAsset(); }}>
+        <input class="asset-input asset-input-name" type="text" placeholder="e.g. Family home" bind:value={newAssetName} />
+        <select class="asset-input asset-input-type" bind:value={newAssetType}>
+          {#each ASSET_TYPES as t}
+            <option value={t.value}>{t.icon} {t.label}</option>
+          {/each}
+        </select>
+        <input class="asset-input asset-input-value" type="number" step="0.01" placeholder="Value" bind:value={newAssetValue} />
+        <button class="btn btn-primary btn-sm" type="submit" disabled={assetSaving}>{assetSaving ? "Adding…" : "Add"}</button>
+      </form>
+      {#if assetError}
+        <p class="asset-error">{assetError}</p>
+      {/if}
+    </div>
   {/if}
 
   {#if cashflow && (cashflow.liquid !== 0 || cashflow.bills.length > 0)}
@@ -1118,13 +1221,42 @@
 
   .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.25rem; }
   .chart-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-card); padding: 1.5rem; box-shadow: var(--app-shadow); }
-  .chart-card-wide { grid-column: 1 / -1; }
   .chart-card h3 { font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin-bottom: 1rem; }
   .chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
   .chart-header h3 { margin-bottom: 0; }
   .trend-select { padding: 0.4rem 0.7rem; border: 1px solid var(--border-color); border-radius: var(--radius-pill); font-size: 0.8rem; background: var(--bg-card); color: var(--text-primary); }
   .chart-wrap { position: relative; width: 100%; max-height: 350px; display: flex; justify-content: center; }
   .chart-wrap canvas { max-width: 100%; max-height: 350px; }
+  .chart-wrap-tall { max-height: 460px; }
+  .chart-wrap-tall canvas { max-height: 460px; }
+  .chart-note { font-size: 0.72rem; font-weight: 400; color: var(--text-secondary); margin-left: 0.4rem; }
+
+  /* Spacing when chart cards stack vertically (they're plain blocks, not grid items). */
+  .dash-block { margin-top: 1.25rem; }
+
+  /* Per-chart controls: little timeframe switch + a select/multi-select. */
+  .chart-controls { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; justify-content: flex-end; }
+  .mini-switch { display: inline-flex; align-items: center; gap: 2px; padding: 3px; border: 1px solid var(--border-color); border-radius: var(--radius-pill); background: var(--bg-card); }
+  .mini-btn { padding: 4px 10px; border: none; border-radius: var(--radius-pill); background: transparent; color: var(--text-secondary); font-size: 0.75rem; font-weight: 500; cursor: pointer; transition: background 0.15s, color 0.15s; }
+  .mini-btn:hover { color: var(--text-primary); }
+  .mini-btn.active { background: var(--accent); color: #fff; }
+
+  /* Multi-select category dropdown (native <details> for free open/close). */
+  .cat-multi { position: relative; }
+  .cat-multi > summary { list-style: none; cursor: pointer; padding: 0.4rem 0.7rem; border: 1px solid var(--border-color); border-radius: var(--radius-pill); font-size: 0.8rem; background: var(--bg-card); color: var(--text-primary); user-select: none; white-space: nowrap; }
+  .cat-multi > summary::-webkit-details-marker { display: none; }
+  .cat-multi > summary::after { content: "▾"; margin-left: 0.4rem; font-size: 0.7rem; color: var(--text-secondary); }
+  .cat-multi[open] > summary::after { content: "▴"; }
+  .cat-multi-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; width: 240px; max-height: 300px; overflow-y: auto; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; box-shadow: var(--app-shadow); padding: 0.35rem; }
+  .cat-multi-item { display: flex; align-items: center; gap: 0.55rem; padding: 0.4rem 0.5rem; border-radius: 8px; font-size: 0.82rem; color: var(--text-primary); cursor: pointer; }
+  .cat-multi-item:hover { background: var(--bg-secondary); }
+  .cat-multi-item input { accent-color: var(--accent); width: 15px; height: 15px; flex-shrink: 0; }
+  .cat-multi-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cat-multi-empty { font-size: 0.8rem; color: var(--text-secondary); padding: 0.4rem 0.5rem; }
+
+  /* Moved page date picker — labelled break that controls the section below. */
+  .section-divider { display: flex; align-items: center; gap: 0.85rem; margin: 1.9rem 0 1.1rem; flex-wrap: wrap; border-top: 1px solid var(--border-color); padding-top: 1.4rem; }
+  .section-divider-label { font-family: "Bitter", Georgia, serif; font-size: 1rem; font-weight: 600; color: var(--text-primary); }
 
   .cat-table-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-card); padding: 1.5rem; box-shadow: var(--app-shadow); margin-top: 1.25rem; }
   .cat-table-card h3 { font-size: 1rem; font-weight: 600; color: var(--text-primary); margin-bottom: 0; }
@@ -1150,6 +1282,7 @@
     border: 1px solid var(--border-color);
     border-radius: var(--radius-card, 12px);
     padding: 1rem 1.25rem;
+    margin-top: 1.75rem;
     margin-bottom: 1.5rem;
     box-shadow: var(--app-shadow);
   }
