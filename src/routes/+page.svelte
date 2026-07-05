@@ -496,12 +496,11 @@
         },
         options: {
           // Horizontal bars (months down the y-axis) — spaces the months out
-          // better than vertical columns, and drops the removed Net line. A
-          // taller aspect gives the 12 months room to breathe.
+          // better than vertical columns, and drops the removed Net line.
+          // Fills its card (fixed-height wrapper) rather than a set aspect ratio.
           indexAxis: "y",
           responsive: true,
-          maintainAspectRatio: true,
-          aspectRatio: 1.5,
+          maintainAspectRatio: false,
           interaction: { intersect: false, mode: "index" },
           scales: {
             x: {
@@ -576,7 +575,7 @@
         data: { labels, datasets },
         options: {
           responsive: true,
-          maintainAspectRatio: true,
+          maintainAspectRatio: false,
           interaction: { intersect: false, mode: "index" },
           scales: {
             y: {
@@ -768,7 +767,7 @@
         data: { labels, datasets },
         options: {
           responsive: true,
-          maintainAspectRatio: true,
+          maintainAspectRatio: false,
           interaction: { intersect: false, mode: "index" },
           scales: {
             y: { stacked: true, border: { display: false }, grid: { color: grid }, ticks: { color: tick, callback: (v: any) => fmt(v) } },
@@ -863,7 +862,7 @@
       </div>
       <div class="chart-card">
         <h3>Monthly Income vs Expenses <span class="chart-note">last 12 months</span></h3>
-        <div class="chart-wrap chart-wrap-tall"><canvas id="barChart"></canvas></div>
+        <div class="chart-fill chart-fill-tall"><canvas id="barChart"></canvas></div>
       </div>
     </div>
 
@@ -893,7 +892,7 @@
           </details>
         </div>
       </div>
-      <div class="chart-wrap"><canvas id="lineChart"></canvas></div>
+      <div class="chart-fill"><canvas id="lineChart"></canvas></div>
     </div>
 
     <!-- Page date picker — controls only the summary cards + tables below. -->
@@ -959,7 +958,7 @@
     {#if netWorth.length > 1}
       <div class="chart-card dash-block">
         <h3>Net Worth Over Time</h3>
-        <div class="chart-wrap"><canvas id="netWorthChart"></canvas></div>
+        <div class="chart-fill"><canvas id="netWorthChart"></canvas></div>
       </div>
     {/if}
 
@@ -1227,8 +1226,10 @@
   .trend-select { padding: 0.4rem 0.7rem; border: 1px solid var(--border-color); border-radius: var(--radius-pill); font-size: 0.8rem; background: var(--bg-card); color: var(--text-primary); }
   .chart-wrap { position: relative; width: 100%; max-height: 350px; display: flex; justify-content: center; }
   .chart-wrap canvas { max-width: 100%; max-height: 350px; }
-  .chart-wrap-tall { max-height: 460px; }
-  .chart-wrap-tall canvas { max-height: 460px; }
+  /* Fill charts stretch to the card width and a fixed height (maintainAspectRatio
+     off), so they use the full card instead of sitting at a fixed aspect ratio. */
+  .chart-fill { position: relative; width: 100%; height: 340px; }
+  .chart-fill-tall { height: 440px; }
   .chart-note { font-size: 0.72rem; font-weight: 400; color: var(--text-secondary); margin-left: 0.4rem; }
 
   /* Spacing when chart cards stack vertically (they're plain blocks, not grid items). */
