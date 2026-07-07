@@ -421,23 +421,42 @@
       if (doughnutChart) doughnutChart.destroy();
       const series = chartSeries();
       const total = doughnutData.data.reduce((a, b) => a + b, 0);
+      const labels = doughnutData.labels;
       doughnutChart = new Chart(canvas, {
         type: "doughnut",
         data: {
-          labels: doughnutData.labels,
+          labels,
           datasets: [{
             data: doughnutData.data,
-            backgroundColor: doughnutData.labels.map((_, i) => series[i % series.length]),
+            backgroundColor: labels.map((_, i) => series[i % series.length]),
             borderColor: themeVar("--bg-card", "#fff"),
             borderWidth: 2,
           }],
         },
         options: {
+          // Fixed-height container + right-hand legend keeps the ring a constant
+          // size whether we're showing parents or a parent's subcategories (the
+          // legend grows sideways, not into the ring). Still scales with the window.
           responsive: true,
-          maintainAspectRatio: true,
+          maintainAspectRatio: false,
           cutout: "62%",
+          // In the parent (all) view, clicking a segment drills into that
+          // category's subcategories (the dropdown returns to "All categories").
+          onClick: (_evt: any, els: any[]) => {
+            if (selectedBreakdown !== "all" || els.length === 0) return;
+            const name = labels[els[0].index];
+            const g = breakdownGroups.find((grp) => grp.name === name && grp.children.length > 0);
+            if (g) selectedBreakdown = String(g.category_id);
+          },
+          onHover: (_evt: any, els: any[], chart: any) => {
+            const drillable =
+              selectedBreakdown === "all" &&
+              els.length > 0 &&
+              breakdownParents.some((p) => p.name === labels[els[0].index]);
+            chart.canvas.style.cursor = drillable ? "pointer" : "default";
+          },
           plugins: {
-            legend: { position: "bottom", labels: { color: themeVar("--text-secondary", "#7b7468"), usePointStyle: true, pointStyle: "circle", boxWidth: 8 } },
+            legend: { position: "right", labels: { color: themeVar("--text-secondary", "#7b7468"), usePointStyle: true, pointStyle: "circle", boxWidth: 8 } },
             tooltip: {
               callbacks: {
                 label: (ctx: any) => {
@@ -858,7 +877,7 @@
             </select>
           </div>
         </div>
-        <div class="chart-wrap"><canvas id="doughnutChart"></canvas></div>
+        <div class="chart-fill"><canvas id="doughnutChart"></canvas></div>
       </div>
       <div class="chart-card">
         <h3>Monthly Income vs Expenses <span class="chart-note">last 12 months</span></h3>
@@ -894,6 +913,13 @@
       </div>
       <div class="chart-fill"><canvas id="lineChart"></canvas></div>
     </div>
+
+    {#if netWorth.length > 1}
+      <div class="chart-card dash-block">
+        <h3>Net Worth Over Time</h3>
+        <div class="chart-fill"><canvas id="netWorthChart"></canvas></div>
+      </div>
+    {/if}
 
     <!-- Page date picker — controls only the summary cards + tables below. -->
     <div class="section-divider">
@@ -954,13 +980,6 @@
         <div class="card-sub-value">{fmt(summary.top_category_amount)}</div>
       </div>
     </div>
-
-    {#if netWorth.length > 1}
-      <div class="chart-card dash-block">
-        <h3>Net Worth Over Time</h3>
-        <div class="chart-fill"><canvas id="netWorthChart"></canvas></div>
-      </div>
-    {/if}
 
     {#if categoryTree.length > 0}
       <div class="cat-table-card">
@@ -1224,8 +1243,6 @@
   .chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
   .chart-header h3 { margin-bottom: 0; }
   .trend-select { padding: 0.4rem 0.7rem; border: 1px solid var(--border-color); border-radius: var(--radius-pill); font-size: 0.8rem; background: var(--bg-card); color: var(--text-primary); }
-  .chart-wrap { position: relative; width: 100%; max-height: 350px; display: flex; justify-content: center; }
-  .chart-wrap canvas { max-width: 100%; max-height: 350px; }
   /* Fill charts stretch to the card width and a fixed height (maintainAspectRatio
      off), so they use the full card instead of sitting at a fixed aspect ratio. */
   .chart-fill { position: relative; width: 100%; height: 340px; }

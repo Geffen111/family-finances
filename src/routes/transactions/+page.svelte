@@ -80,6 +80,9 @@
   let txTags = $state<Record<number, Tag[]>>({});
   let allTags = $state<Tag[]>([]);
   let tagFilterId = $state<number | null>(null);
+  // Category filter: "all" | "uncat" | a category id as a string. Picking a
+  // parent category also matches transactions in any of its subcategories.
+  let categoryFilterId = $state<string>("all");
   let showTagModal = $state(false);
   let tagModalTxId = $state<number>(0);
   let tagInput = $state("");
@@ -428,12 +431,21 @@
     })
   );
 
-  // Client-side search across description and amounts, plus an optional tag filter.
+  // Client-side search across description and amounts, plus optional tag and
+  // category filters.
   let visibleTransactions = $derived.by(() => {
     const q = searchText.trim().toLowerCase();
     let rows = sortedTransactions;
     if (tagFilterId != null) {
       rows = rows.filter((t) => (txTags[t.id] ?? []).some((tag) => tag.id === tagFilterId));
+    }
+    if (categoryFilterId === "uncat") {
+      rows = rows.filter((t) => t.category_id == null);
+    } else if (categoryFilterId !== "all") {
+      const id = Number(categoryFilterId);
+      // A parent category also matches its subcategories; a leaf just matches itself.
+      const childIds = new Set(categories.filter((c) => c.parent_id === id).map((c) => c.id));
+      rows = rows.filter((t) => t.category_id === id || (t.category_id != null && childIds.has(t.category_id)));
     }
     if (!q) return rows;
     return rows.filter(
@@ -598,14 +610,23 @@
   let renderLimit = $state(PAGE_SIZE);
   let displayedTransactions = $derived(visibleTransactions.slice(0, renderLimit));
 
-  // Reset the window whenever the account or search changes.
+  // Reset the window whenever the account, search or a filter changes.
   $effect(() => {
     selectedAccountId;
     searchText;
+    categoryFilterId;
+    tagFilterId;
     renderLimit = PAGE_SIZE;
   });
 
   let subcategories = $derived(categories.filter((c) => c.parent_id !== null));
+  // Top-level categories (for the category-filter dropdown), each with its kids.
+  let parentCategories = $derived(
+    categories.filter((c) => c.parent_id === null).sort((a, b) => a.name.localeCompare(b.name)),
+  );
+  function childrenOf(parentId: number): Category[] {
+    return categories.filter((c) => c.parent_id === parentId).sort((a, b) => a.name.localeCompare(b.name));
+  }
 
   // Hide the Balance column for accounts that carry no running balance (e.g. the
   // credit card, whose CSVs have none) — keeps it for Savings/Everyday/Home Loan.
@@ -754,6 +775,23 @@
     <button class="btn btn-sm" class:btn-primary={activePreset === "last3Months"} onclick={() => { setDatePreset("last3Months"); applyFilterAndLoad(); }}>Last 3 Months</button>
     <button class="btn btn-sm" class:btn-primary={activePreset === "all"} onclick={() => { setDatePreset("all"); applyFilterAndLoad(); }}>All Time</button>
     <input class="search-input" type="search" placeholder="Search description or amount…" bind:value={searchText} />
+    <select class="cat-filter" bind:value={categoryFilterId} aria-label="Filter by category">
+      <option value="all">All categories</option>
+      <option value="uncat">Uncategorised</option>
+      {#each parentCategories as p (p.id)}
+        {@const kids = childrenOf(p.id)}
+        {#if kids.length > 0}
+          <optgroup label={p.name}>
+            <option value={String(p.id)}>All {p.name}</option>
+            {#each kids as c (c.id)}
+              <option value={String(c.id)}>{c.name}</option>
+            {/each}
+          </optgroup>
+        {:else}
+          <option value={String(p.id)}>{p.name}</option>
+        {/if}
+      {/each}
+    </select>
     {#if allTags.length > 0}
       <select class="tag-filter" bind:value={tagFilterId}>
         <option value={null}>All tags</option>
@@ -1101,6 +1139,7 @@
   .tag-add { background: none; border: 1px dashed var(--border-color); color: var(--text-secondary); cursor: pointer; font-size: 0.7rem; line-height: 1; border-radius: 999px; padding: 0.05rem 0.35rem; }
   .tag-add:hover { color: var(--text-primary); border-color: var(--text-secondary); }
   .tag-filter { padding: 0.4rem 0.6rem; border: 1px solid var(--border-color); border-radius: 10px; font-size: 0.85rem; background: var(--bg-card); color: var(--text-primary); }
+  .cat-filter { padding: 0.4rem 0.6rem; border: 1px solid var(--border-color); border-radius: 10px; font-size: 0.85rem; background: var(--bg-card); color: var(--text-primary); max-width: 220px; }
   .tag-modal-input { width: 100%; padding: 0.5rem 0.65rem; border: 1px solid var(--border-color); border-radius: 10px; font-size: 0.9rem; background: var(--bg-card); color: var(--text-primary); }
 
   .cat-cell-inner { display: flex; align-items: center; gap: 0.3rem; }
