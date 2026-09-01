@@ -706,8 +706,17 @@
         transactionId,
         categoryId,
       });
-      invalidateCache(selectedAccountId);
-      await loadTransactions();
+      // Patch the row in place rather than reloading. A reload flips `loading`,
+      // which swaps the whole table out for the loading message — that destroys
+      // the scroll container, so the view jumped back to the top of the list
+      // after every re-categorisation (and cleared the current selection).
+      const next = transactions.map((t) =>
+        t.id === transactionId ? { ...t, category_id: categoryId } : t,
+      );
+      transactions = next;
+      // Keep the prefetch cache in step (it holds the pre-patch array object).
+      if (txCache.has(selectedAccountId)) txCache.set(selectedAccountId, next);
+      uncategorisedCount = next.filter((t) => t.category_id == null).length;
     } catch (e) {
       showToast(String(e), "error");
     }
@@ -868,7 +877,7 @@
                 <input type="checkbox" checked={selectedTxIds.has(tx.id)} onchange={() => toggleSelect(tx.id)} aria-label="Select transaction" />
               </td>
               <td class="cell-date">{tx.date}</td>
-              <td class="cell-desc">
+              <td class="cell-desc" title={tx.description}>
                 <span class="desc-text">{tx.description}</span>
                 <span class="tag-chips">
                   {#each txTags[tx.id] ?? [] as tag (tag.id)}
@@ -1124,14 +1133,19 @@
   .table-wrap { max-height: 60vh; overflow-y: auto; border: 1px solid var(--border-color); border-radius: var(--radius-card); box-shadow: var(--app-shadow); }
   .tx-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
   .tx-table thead { position: sticky; top: 0; z-index: 1; }
-  .tx-table th { background: var(--bg-secondary); padding: 0.6rem 0.75rem; text-align: left; font-weight: 600; color: var(--text-primary); border-bottom: 2px solid var(--border-color); white-space: nowrap; user-select: none; }
+  .tx-table th { background: var(--bg-secondary); padding: 0.5rem 0.5rem; text-align: left; font-weight: 600; color: var(--text-primary); border-bottom: 2px solid var(--border-color); white-space: nowrap; user-select: none; }
   .tx-table th.sortable { cursor: pointer; }
   .tx-table th.sortable:hover { background: var(--border-color); }
   .sort-icon { font-size: 0.7rem; margin-left: 0.25rem; color: var(--text-muted); }
-  .tx-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--bg-secondary); }
-  .cell-date { white-space: nowrap; color: var(--text-secondary); }
-  .cell-desc { max-width: 340px; color: var(--text-primary); }
-  .desc-text { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tx-table td { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--bg-secondary); vertical-align: top; }
+  /* Every column except Description is sized to its content (width:1% + nowrap
+     collapses it), so the description gets all the leftover width. */
+  .cell-date { white-space: nowrap; color: var(--text-secondary); width: 1%; }
+  .cell-desc { color: var(--text-primary); }
+  /* Wrap long bank lines onto further lines instead of clipping them — account
+     numbers and references at the end of a description were being cut off.
+     The cell also carries a title attribute for the full text on hover. */
+  .desc-text { display: block; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
   .tag-chips { display: inline-flex; flex-wrap: wrap; gap: 0.25rem; align-items: center; margin-top: 0.2rem; }
   .tag-chip { display: inline-flex; align-items: center; gap: 0.15rem; font-size: 0.68rem; color: var(--accent); background: var(--accent-soft, var(--bg-secondary)); border-radius: 999px; padding: 0.05rem 0.4rem; }
   .tag-x { background: none; border: none; color: inherit; cursor: pointer; font-size: 0.85rem; line-height: 1; padding: 0; opacity: 0.7; }
@@ -1155,10 +1169,10 @@
   .split-add-row { margin-top: 0.5rem; }
   .split-remainder { font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.6rem; font-variant-numeric: tabular-nums; }
   .split-remainder.split-bad { color: var(--neg); }
-  .cell-debit { text-align: right; color: var(--neg); font-variant-numeric: tabular-nums; }
-  .cell-credit { text-align: right; color: var(--pos); font-variant-numeric: tabular-nums; }
-  .cell-balance { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-primary); }
-  .cell-category { min-width: 200px; }
+  .cell-debit { text-align: right; color: var(--neg); font-variant-numeric: tabular-nums; white-space: nowrap; width: 1%; }
+  .cell-credit { text-align: right; color: var(--pos); font-variant-numeric: tabular-nums; white-space: nowrap; width: 1%; }
+  .cell-balance { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-primary); white-space: nowrap; width: 1%; }
+  .cell-category { min-width: 210px; width: 1%; }
   .cat-select { width: 100%; padding: 0.3rem 0.4rem; font-size: 0.8rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-card); color: var(--text-primary); cursor: pointer; }
   .cat-select:hover { border-color: var(--text-muted); }
   .summary { display: flex; gap: 2rem; margin-top: 1rem; padding: 0.75rem 1rem; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-card); }
