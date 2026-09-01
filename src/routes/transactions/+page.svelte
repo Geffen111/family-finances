@@ -99,6 +99,10 @@
   let aiSuggestions = $state<CategorisationSuggestion[]>([]);
   let acceptedSet = $state<Set<number>>(new Set());
   let showAiModal = $state(false);
+  // Tags + split markers for the AI review rows. The review list is drawn from
+  // every account, so it can't reuse the account-scoped txTags/splitTxIds maps.
+  let reviewTags = $state<Record<number, Tag[]>>({});
+  let reviewSplitIds = $state<Set<number>>(new Set());
   let hasApiKey = $state<boolean>(false);
   let uncategorisedCount = $state(0);
 
@@ -263,6 +267,8 @@
         aiSuggestions = review;
         acceptedSet = new Set(review.map((s) => s.transaction_id));
         showAiModal = true;
+        loadReviewTags();
+        loadReviewSplits();
         if (autoApplied > 0) {
           showToast(`Auto-applied ${autoApplied}; ${review.length} to review.`, "success");
         }
@@ -276,6 +282,48 @@
     } finally {
       aiProcessing = false;
     }
+  }
+
+  // Tags / split markers for whatever is currently in the review modal.
+  async function loadReviewTags() {
+    const ids = aiSuggestions.map((s) => s.transaction_id);
+    if (ids.length === 0) {
+      reviewTags = {};
+      return;
+    }
+    try {
+      reviewTags = await invoke<Record<number, Tag[]>>("get_transaction_tags", {
+        transactionIds: ids,
+      });
+    } catch {
+      reviewTags = {};
+    }
+  }
+
+  async function loadReviewSplits() {
+    const ids = aiSuggestions.map((s) => s.transaction_id);
+    if (ids.length === 0) {
+      reviewSplitIds = new Set();
+      return;
+    }
+    try {
+      const split = await invoke<number[]>("get_split_ids_for_transactions", {
+        transactionIds: ids,
+      });
+      reviewSplitIds = new Set(split);
+    } catch {
+      reviewSplitIds = new Set();
+    }
+  }
+
+  // Keep a review row's split marker in step after the split editor is used
+  // on top of the review modal.
+  function markReviewSplit(txId: number, isSplit: boolean) {
+    if (!showAiModal) return;
+    const next = new Set(reviewSplitIds);
+    if (isSplit) next.add(txId);
+    else next.delete(txId);
+    reviewSplitIds = next;
   }
 
   function toggleAccept(txId: number) {
@@ -494,7 +542,9 @@
     }
   }
 
-  async function openSplitModal(tx: Transaction) {
+  // Takes the minimum a split needs, so both a table row (Transaction) and an
+  // AI review row (CategorisationSuggestion) can open the editor.
+  async function openSplitModal(tx: { id: number; debit: number; category_id: number | null }) {
     if (tx.debit <= 0) {
       showToast("Only expense transactions can be split.", "error");
       return;
@@ -538,6 +588,7 @@
       await invoke("set_transaction_splits", { transactionId: splitTxId, splits: rows });
       showToast(rows.length ? "Split saved." : "Split cleared.", "success");
       showSplitModal = false;
+      markReviewSplit(splitTxId, rows.length > 0);
       await loadSplitIds();
     } catch (e) {
       showToast(String(e), "error");
@@ -549,6 +600,7 @@
       await invoke("set_transaction_splits", { transactionId: splitTxId, splits: [] });
       showToast("Split cleared.", "success");
       showSplitModal = false;
+      markReviewSplit(splitTxId, false);
       await loadSplitIds();
     } catch (e) {
       showToast(String(e), "error");
@@ -593,6 +645,7 @@
       if (tagFilterId != null && !allTags.some((t) => t.id === tagFilterId)) {
         tagFilterId = null;
       }
+      if (showAiModal) await loadReviewTags();
     } catch (e) {
       showToast(String(e), "error");
     }
@@ -728,7 +781,14 @@
   }
 </script>
 
-<svelte:window onkeydown={(e) => { if (e.key === "Escape") { showAiModal = false; showImportModal = false; showTagModal = false; showSplitModal = false; } }} />
+<svelte:window onkeydown={(e) => {
+  if (e.key !== "Escape") return;
+  // Topmost layer only: the split and tag editors can be opened from on top of
+  // the AI review modal, so Escape there shouldn't also dismiss the review.
+  if (showSplitModal) showSplitModal = false;
+  else if (showTagModal) showTagModal = false;
+  else { showAiModal = false; showImportModal = false; }
+}} />
 
 <div class="page">
   <div class="header">
@@ -984,7 +1044,31 @@
                     <option value={cat.id}>{cat.path}</option>
                   {/each}
                 </select>
+                {#if s.debit > 0}
+                  {#if reviewSplitIds.has(s.transaction_id)}
+                    <button
+                      class="split-btn split-btn-on"
+                      title="Edit split"
+                      onclick={() => openSplitModal({ id: s.transaction_id, debit: s.debit, category_id: s.category_id })}
+                    >⊟ Split set</button>
+                  {:else}
+                    <button
+                      class="split-btn"
+                      title="Split this transaction across categories"
+                      onclick={() => openSplitModal({ id: s.transaction_id, debit: s.debit, category_id: s.category_id })}
+                    >⊟ Split</button>
+                  {/if}
+                {/if}
                 <span class="suggestion-reasoning">{s.reasoning}</span>
+              </div>
+              <div class="suggestion-tags">
+                {#each reviewTags[s.transaction_id] ?? [] as tag (tag.id)}
+                  <span class="tag-chip">
+                    #{tag.name}
+                    <button class="tag-x" title="Remove tag" onclick={() => removeTag(s.transaction_id, tag.id)}>×</button>
+                  </span>
+                {/each}
+                <button class="tag-add" title="Add tag" onclick={() => openTagModal(s.transaction_id)}>＋ Tag</button>
               </div>
               <div class="suggestion-confidence">
                 <div class="conf-bar-track">
@@ -1241,6 +1325,12 @@
     max-width: 100%;
   }
   .suggestion-reasoning { font-size: 0.78rem; color: var(--text-secondary); }
+  /* The split button in a review row carries a label (unlike the icon-only one
+     in the table, where the column header supplies the context). */
+  .suggestion-category .split-btn { white-space: nowrap; font-size: 0.75rem; }
+  .split-btn-on { color: var(--accent); border-color: var(--accent); }
+  .split-btn-on:hover { color: var(--accent); border-color: var(--accent); filter: brightness(0.95); }
+  .suggestion-tags { display: flex; flex-wrap: wrap; gap: 0.25rem; align-items: center; margin-bottom: 0.3rem; }
   .suggestion-confidence { display: flex; align-items: center; gap: 0.5rem; }
   .conf-bar-track { flex: 1; height: 6px; background: var(--border-color); border-radius: 3px; max-width: 120px; }
   .conf-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }

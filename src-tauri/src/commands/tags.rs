@@ -107,3 +107,39 @@ pub async fn get_account_tags(
     }
     Ok(map)
 }
+
+/// Tags for an explicit list of transaction ids, keyed by transaction id (only
+/// transactions that have at least one tag appear). The account-scoped map
+/// above doesn't cover the AI review list, whose rows can span accounts, so
+/// that view asks by id instead. Ids are bound in chunks to stay well inside
+/// SQLite's host-parameter limit.
+#[tauri::command]
+pub async fn get_transaction_tags(
+    pool: State<'_, SqlitePool>,
+    transaction_ids: Vec<i64>,
+) -> Result<HashMap<i64, Vec<Tag>>, String> {
+    let mut map: HashMap<i64, Vec<Tag>> = HashMap::new();
+    for chunk in transaction_ids.chunks(500) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "SELECT tt.transaction_id, t.id, t.name \
+             FROM transaction_tags tt \
+             JOIN tags t ON tt.tag_id = t.id \
+             WHERE tt.transaction_id IN ({}) \
+             ORDER BY t.name COLLATE NOCASE",
+            placeholders
+        );
+        let mut q = sqlx::query_as::<_, (i64, i64, String)>(&sql);
+        for id in chunk {
+            q = q.bind(id);
+        }
+        let rows = q
+            .fetch_all(&*pool)
+            .await
+            .map_err(|e| format!("DB query error: {}", e))?;
+        for (tx_id, id, name) in rows {
+            map.entry(tx_id).or_default().push(Tag { id, name });
+        }
+    }
+    Ok(map)
+}

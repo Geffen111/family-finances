@@ -91,9 +91,11 @@ pub fn run() {
             commands::tags::add_tag_to_transaction,
             commands::tags::remove_tag_from_transaction,
             commands::tags::get_account_tags,
+            commands::tags::get_transaction_tags,
             commands::splits::get_transaction_splits,
             commands::splits::set_transaction_splits,
             commands::splits::get_split_transaction_ids,
+            commands::splits::get_split_ids_for_transactions,
             commands::update::latest_build_info,
         ])
         .run(tauri::generate_context!())

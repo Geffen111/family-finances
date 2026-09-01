@@ -109,3 +109,31 @@ pub async fn set_transaction_splits(
     tx.commit().await.map_err(|e| format!("DB error: {}", e))?;
     Ok(())
 }
+
+/// Which of the given transactions currently have splits. Same reason as the
+/// by-id tag lookup: the AI review list isn't scoped to one account.
+#[tauri::command]
+pub async fn get_split_ids_for_transactions(
+    pool: State<'_, SqlitePool>,
+    transaction_ids: Vec<i64>,
+) -> Result<Vec<i64>, String> {
+    let mut out: Vec<i64> = Vec::new();
+    for chunk in transaction_ids.chunks(500) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "SELECT DISTINCT transaction_id FROM transaction_splits \
+             WHERE transaction_id IN ({})",
+            placeholders
+        );
+        let mut q = sqlx::query_scalar::<_, i64>(&sql);
+        for id in chunk {
+            q = q.bind(id);
+        }
+        let ids = q
+            .fetch_all(&*pool)
+            .await
+            .map_err(|e| format!("DB query error: {}", e))?;
+        out.extend(ids);
+    }
+    Ok(out)
+}
