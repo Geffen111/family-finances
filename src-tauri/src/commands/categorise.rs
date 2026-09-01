@@ -17,6 +17,22 @@ pub struct CategorisationSuggestion {
     pub reasoning: String,
 }
 
+/// What a categorisation run produced, plus how it got there. The timings and
+/// the history/AI split are shown to the user after each run: a run that feels
+/// slow is almost always a handful of AI batches waiting on the provider, and
+/// without these numbers there was no way to tell that from a large workload.
+#[derive(Debug, serde::Serialize)]
+pub struct CategorisationRun {
+    pub suggestions: Vec<CategorisationSuggestion>,
+    /// Resolved locally from previous categorisations - no network involved.
+    pub history_matched: usize,
+    /// Sent to the LLM because history had nothing to match on.
+    pub llm_categorised: usize,
+    pub llm_batches: usize,
+    pub elapsed_ms: u64,
+    pub llm_elapsed_ms: u64,
+}
+
 fn find_category_id(categories: &[CategoryWithPath], path: &str) -> Option<i64> {
     if path == "Unknown > Unknown" {
         return None;
@@ -103,7 +119,8 @@ fn short_desc(desc: &str) -> String {
 #[tauri::command]
 pub async fn categorise_transactions(
     pool: State<'_, SqlitePool>,
-) -> Result<Vec<CategorisationSuggestion>, String> {
+) -> Result<CategorisationRun, String> {
+    let started = std::time::Instant::now();
     let categories = sqlx::query_as::<_, crate::models::Category>(
         "SELECT id, name, parent_id, monthly_budget, created_at, exclude_from_budget, rollover FROM categories ORDER BY id"
     )
@@ -220,7 +237,14 @@ pub async fn categorise_transactions(
     .map_err(|e| format!("DB query error: {}", e))?;
 
     if uncategorised.is_empty() {
-        return Ok(Vec::new());
+        return Ok(CategorisationRun {
+            suggestions: Vec::new(),
+            history_matched: 0,
+            llm_categorised: 0,
+            llm_batches: 0,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            llm_elapsed_ms: 0,
+        });
     }
 
     let mut all_results: Vec<CategorisationSuggestion> = Vec::new();
@@ -274,7 +298,13 @@ pub async fn categorise_transactions(
         }
     }
 
+    let history_matched = all_results.len();
+    let llm_categorised = llm_txs.len();
+    let mut llm_batches = 0usize;
+    let mut llm_elapsed_ms = 0u64;
+
     if !llm_txs.is_empty() {
+        let llm_started = std::time::Instant::now();
         let api_key = crate::commands::settings::get_api_key()
             .await?
             .ok_or_else(|| {
@@ -282,24 +312,65 @@ pub async fn categorise_transactions(
                  Go to Settings first."
                     .to_string()
             })?;
-        let categorizer = AiCategorizer::new(api_key);
 
-        for chunk in llm_txs.chunks(50) {
-            let infos: Vec<TransactionInfo> = chunk
-                .iter()
-                .map(|t| TransactionInfo {
-                    description: t.description.clone(),
-                    debit: t.debit,
-                    credit: t.credit,
-                })
-                .collect();
+        // 25, not 50: a batch's reply carries one object per transaction with a
+        // sentence of reasoning, and 50 of those ran close enough to the 4096
+        // max_tokens ceiling that a truncated reply would fail the whole run on
+        // a JSON parse error.
+        const BATCH_SIZE: usize = 25;
+        // Batches used to run strictly one after another, so the provider's
+        // latency was multiplied by the batch count (the query caps at 500
+        // uncategorised, so up to 20 batches). Run a few at a time instead; the
+        // cap keeps us from opening 20 connections at once.
+        const MAX_IN_FLIGHT: usize = 4;
 
-            let results = categorizer
-                .categorise_batch(&infos, &category_paths, &examples)
-                .await?;
+        let categorizer = std::sync::Arc::new(AiCategorizer::new(api_key));
+        let paths = std::sync::Arc::new(category_paths.clone());
+        let shots = std::sync::Arc::new(examples.clone());
 
+        let chunks: Vec<&[&crate::models::Transaction]> = llm_txs.chunks(BATCH_SIZE).collect();
+        llm_batches = chunks.len();
+        let mut batch_results: Vec<Option<Vec<crate::services::categorizer::CategorisationResult>>> =
+            (0..chunks.len()).map(|_| None).collect();
+
+        // Each chunk carries its own index into `batch_results`, so a result
+        // can only ever land against the batch it came from.
+        let indexed: Vec<(usize, &[&crate::models::Transaction])> =
+            chunks.iter().copied().enumerate().collect();
+
+        for wave in indexed.chunks(MAX_IN_FLIGHT) {
+            let mut set = tokio::task::JoinSet::new();
+            for (idx, chunk) in wave {
+                let idx = *idx;
+                let infos: Vec<TransactionInfo> = chunk
+                    .iter()
+                    .map(|t| TransactionInfo {
+                        description: t.description.clone(),
+                        debit: t.debit,
+                        credit: t.credit,
+                    })
+                    .collect();
+                let categorizer = categorizer.clone();
+                let paths = paths.clone();
+                let shots = shots.clone();
+                set.spawn(async move {
+                    (idx, categorizer.categorise_batch(&infos, &paths, &shots).await)
+                });
+            }
+            while let Some(joined) = set.join_next().await {
+                let (idx, result) =
+                    joined.map_err(|e| format!("Categorisation batch failed: {}", e))?;
+                batch_results[idx] = Some(result?);
+            }
+        }
+
+        // Back in batch order, so each result lines up with its transaction.
+        for (ci, chunk) in chunks.iter().enumerate() {
+            let Some(results) = batch_results[ci].take() else {
+                continue;
+            };
             for (j, result) in results.iter().enumerate() {
-                let tx = chunk[j];
+                let Some(tx) = chunk.get(j) else { continue };
                 let category_id = find_category_id(&category_with_paths, &result.category_path);
                 let confidence = result.confidence.clamp(0.0, 1.0);
 
@@ -316,9 +387,18 @@ pub async fn categorise_transactions(
                 });
             }
         }
+
+        llm_elapsed_ms = llm_started.elapsed().as_millis() as u64;
     }
 
-    Ok(all_results)
+    Ok(CategorisationRun {
+        suggestions: all_results,
+        history_matched,
+        llm_categorised,
+        llm_batches,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+        llm_elapsed_ms,
+    })
 }
 
 #[tauri::command]

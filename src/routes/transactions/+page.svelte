@@ -48,6 +48,17 @@
     reasoning: string;
   }
 
+  // What categorise_transactions returns: the suggestions plus how the run
+  // spent its time, so a slow run can be told apart from a big one.
+  interface CategorisationRun {
+    suggestions: CategorisationSuggestion[];
+    history_matched: number;
+    llm_categorised: number;
+    llm_batches: number;
+    elapsed_ms: number;
+    llm_elapsed_ms: number;
+  }
+
   interface Tag {
     id: number;
     name: string;
@@ -96,6 +107,8 @@
   let splitRows = $state<{ category_id: number | null; amount: string }[]>([]);
 
   let aiProcessing = $state(false);
+  // Timing summary of the last AI run, shown in the toast and the review modal.
+  let lastRunStats = $state<string | null>(null);
   let aiSuggestions = $state<CategorisationSuggestion[]>([]);
   let acceptedSet = $state<Set<number>>(new Set());
   let showAiModal = $state(false);
@@ -247,7 +260,9 @@
     }
     aiProcessing = true;
     try {
-      const all = await invoke<CategorisationSuggestion[]>("categorise_transactions");
+      const run = await invoke<CategorisationRun>("categorise_transactions");
+      const all = run.suggestions;
+      lastRunStats = formatRunStats(run);
       if (all.length === 0) {
         showToast("No uncategorised transactions found.", "success");
         return;
@@ -270,12 +285,15 @@
         loadReviewTags();
         loadReviewSplits();
         if (autoApplied > 0) {
-          showToast(`Auto-applied ${autoApplied}; ${review.length} to review.`, "success");
+          showToast(`Auto-applied ${autoApplied}; ${review.length} to review. ${lastRunStats}`, "success");
         }
       } else {
         invalidateCache();
         await loadTransactions();
-        showToast(`Auto-applied ${autoApplied} categorisation${autoApplied === 1 ? "" : "s"}.`, "success");
+        showToast(
+          `Auto-applied ${autoApplied} categorisation${autoApplied === 1 ? "" : "s"}. ${lastRunStats}`,
+          "success",
+        );
       }
     } catch (e) {
       showToast(String(e), "error");
@@ -324,6 +342,27 @@
     if (isSplit) next.add(txId);
     else next.delete(txId);
     reviewSplitIds = next;
+  }
+
+  // "2.4s", "1m 12s" — short enough to sit in a toast.
+  function formatMs(ms: number): string {
+    if (ms < 1000) return `${ms}ms`;
+    const secs = ms / 1000;
+    if (secs < 60) return `${secs.toFixed(1)}s`;
+    const mins = Math.floor(secs / 60);
+    return `${mins}m ${Math.round(secs - mins * 60)}s`;
+  }
+
+  // Where the run's time went. The history leg is local and effectively free,
+  // so a slow run is almost always the AI leg waiting on the provider — which
+  // this makes visible instead of leaving it to guesswork.
+  function formatRunStats(run: CategorisationRun): string {
+    const parts = [`${run.history_matched} from history`];
+    if (run.llm_categorised > 0) {
+      const batches = run.llm_batches > 1 ? ` over ${run.llm_batches} batches` : "";
+      parts.push(`${run.llm_categorised} via AI in ${formatMs(run.llm_elapsed_ms)}${batches}`);
+    }
+    return `${parts.join(", ")} \u2014 ${formatMs(run.elapsed_ms)} total.`;
   }
 
   function toggleAccept(txId: number) {
@@ -1016,6 +1055,9 @@
         <p class="modal-hint">
           Review the AI suggestions below. Transactions with high confidence are pre-accepted.
         </p>
+        {#if lastRunStats}
+          <p class="run-stats">{lastRunStats}</p>
+        {/if}
         {#each aiSuggestions as s}
           <div class="suggestion-row" class:suggestion-accepted={acceptedSet.has(s.transaction_id)}>
             <div class="suggestion-check">
@@ -1303,6 +1345,10 @@
   }
   .modal-hint {
     font-size: 0.85rem; color: var(--text-secondary); margin: 0 0 1rem 0;
+  }
+  .run-stats {
+    font-size: 0.78rem; color: var(--text-muted); margin: -0.75rem 0 1rem 0;
+    font-variant-numeric: tabular-nums;
   }
   .suggestion-row {
     display: flex; gap: 0.75rem; padding: 0.75rem;

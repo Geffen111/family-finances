@@ -70,6 +70,13 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
 - **`exclude_from_budget`** flag on categories keeps a category (e.g. internal transfers) out
   of all income/expense/budget/forecast aggregations — apply it via the NULL-safe
   `NOT EXISTS (... exclude_from_budget = 1)` guard, not a join.
+- **AI categorisation shape:** `categorise_transactions` returns a `CategorisationRun`
+  (suggestions + `history_matched`/`llm_categorised`/`llm_batches`/`elapsed_ms`/
+  `llm_elapsed_ms`), and the UI shows that timing after each run — most rows are resolved
+  locally by the history matcher, so a slow run means the AI leg is waiting on the
+  provider. LLM batches are 25 transactions (bigger risks truncating the reply at
+  `max_tokens: 4096`, which fails the run on a JSON parse error) and up to 4 run
+  concurrently. The OpenRouter client has a 120s timeout.
 - **`normalize_desc`** (`commands/categorise.rs`, `pub`) reduces a bank line to a stable
   merchant key; reused by recurring detection. Reuse it, don't reinvent.
 - **`tx_effective` view** (migration 15) explodes split transactions into one row per
