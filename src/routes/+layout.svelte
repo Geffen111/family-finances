@@ -235,6 +235,14 @@
   :global(.btn-danger), :global(.btn-delete) { background: var(--neg); color: #fff; border-color: var(--neg); }
   :global(.btn-danger:hover), :global(.btn-delete:hover) { background: var(--neg); filter: brightness(0.95); }
 
+  /* Shared modal spacing. Each page owns its own .modal panel (width, padding),
+     but the reset above zeroes every margin, so a modal title sat flush against
+     the first field and confirmation copy ran line-to-line. Panels that lay out
+     their own header (.modal-header) override this with their own rules. */
+  :global(.modal h2) { font-size: 1.15rem; margin-bottom: 0.9rem; }
+  :global(.modal > p) { font-size: 0.9rem; line-height: 1.5; }
+  :global(.modal > p + p) { margin-top: 0.4rem; }
+
   :root {
     /* Hearth — light */
     --bg-primary: #ffffff;

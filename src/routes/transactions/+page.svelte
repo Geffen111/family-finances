@@ -1130,7 +1130,7 @@
 
 {#if showSplitModal}
   <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) showSplitModal = false; }}>
-    <div class="modal" role="dialog" aria-modal="true" tabindex="-1">
+    <div class="modal modal-plain" role="dialog" aria-modal="true" tabindex="-1">
       <h2>Split transaction</h2>
       <p class="split-total-line">Transaction total: <strong>{fmt(splitTxDebit)}</strong></p>
       <div class="split-rows">
@@ -1163,7 +1163,7 @@
 
 {#if showTagModal}
   <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) showTagModal = false; }}>
-    <div class="modal modal-sm" role="dialog" aria-modal="true" tabindex="-1">
+    <div class="modal modal-sm modal-plain" role="dialog" aria-modal="true" tabindex="-1">
       <h2>Add tag</h2>
       <input
         class="tag-modal-input"
@@ -1250,7 +1250,8 @@
   .split-row select, .split-row input { padding: 0.4rem 0.55rem; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-card); color: var(--text-primary); font-size: 0.85rem; }
   .split-row-x { background: none; border: none; color: var(--text-secondary); cursor: pointer; font-size: 1.1rem; line-height: 1; }
   .split-row-x:disabled { opacity: 0.3; cursor: not-allowed; }
-  .split-add-row { margin-top: 0.5rem; }
+  /* .modal is a flex column, so a bare button child would stretch full width. */
+  .split-add-row { margin-top: 0.5rem; align-self: flex-start; }
   .split-remainder { font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.6rem; font-variant-numeric: tabular-nums; }
   .split-remainder.split-bad { color: var(--neg); }
   .cell-debit { text-align: right; color: var(--neg); font-variant-numeric: tabular-nums; white-space: nowrap; width: 1%; }
@@ -1280,6 +1281,12 @@
     box-shadow: 0 20px 60px rgba(0,0,0,0.2);
   }
   .modal-sm { width: min(440px, 90vw); }
+  /* The split and tag editors are plain panels rather than the
+     header/body/footer layout the AI review and import modals use — .modal
+     itself carries no padding, so their content was sitting flush against the
+     panel edges. */
+  .modal-plain { padding: 1.25rem 1.5rem; overflow-y: auto; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.25rem; }
   .import-account-select { width: 100%; padding: 0.5rem; font-size: 0.9rem; }
   .modal-header {
     display: flex; justify-content: space-between; align-items: center;
