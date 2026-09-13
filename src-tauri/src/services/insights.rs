@@ -405,7 +405,7 @@ Respond with JSON only:
         net = net,
     );
 
-    let client = reqwest::Client::new();
+    let client = crate::services::openrouter::client();
 
     let body = serde_json::json!({
         "model": "deepseek/deepseek-v4-flash",
@@ -423,7 +423,7 @@ Respond with JSON only:
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("API request failed: {}", e))?;
+        .map_err(crate::services::openrouter::send_error)?;
 
     let status = response.status();
     let response_text = response

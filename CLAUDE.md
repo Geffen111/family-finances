@@ -76,7 +76,10 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   locally by the history matcher, so a slow run means the AI leg is waiting on the
   provider. LLM batches are 25 transactions (bigger risks truncating the reply at
   `max_tokens: 4096`, which fails the run on a JSON parse error) and up to 4 run
-  concurrently. The OpenRouter client has a 120s timeout.
+  concurrently.
+- **OpenRouter calls** build their client via `services/openrouter.rs` (`client()` has a
+  120s timeout; `send_error` names a timeout as provider queueing). Never use a bare
+  `reqwest::Client::new()` — it has no timeout, so a stalled provider hung the UI.
 - **`normalize_desc`** (`commands/categorise.rs`, `pub`) reduces a bank line to a stable
   merchant key; reused by recurring detection. Reuse it, don't reinvent.
 - **`tx_effective` view** (migration 15) explodes split transactions into one row per

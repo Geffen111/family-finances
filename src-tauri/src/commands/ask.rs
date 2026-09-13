@@ -263,7 +263,7 @@ fn strip_code_fences(content: &str) -> &str {
 }
 
 async fn call_openrouter(api_key: &str, prompt: &str) -> Result<String, String> {
-    let client = reqwest::Client::new();
+    let client = crate::services::openrouter::client();
     let body = serde_json::json!({
         "model": "deepseek/deepseek-v4-flash",
         "messages": [{"role": "user", "content": prompt}],
@@ -278,7 +278,7 @@ async fn call_openrouter(api_key: &str, prompt: &str) -> Result<String, String> 
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("API request failed: {}", e))?;
+        .map_err(crate::services::openrouter::send_error)?;
 
     let status = response.status();
     let text = response

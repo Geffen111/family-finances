@@ -12,7 +12,12 @@ pub async fn latest_build_info(owner: String, repo: String) -> Result<Option<ser
         "https://github.com/{}/{}/releases/download/latest/build-info.json",
         owner, repo
     );
-    let client = reqwest::Client::new();
+    // No timeout used to mean a stalled connection kept this check pending for
+    // the life of the app. It's a background nicety, so give up quickly.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
     let resp = match client.get(&url).send().await {
         Ok(r) => r,
         Err(_) => return Ok(None),

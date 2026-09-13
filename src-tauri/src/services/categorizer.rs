@@ -36,17 +36,11 @@ pub struct AiCategorizer {
 }
 
 impl AiCategorizer {
-    /// A request that never returns used to hang the "AI Categorise" button
-    /// indefinitely — OpenRouter routes to whichever provider is available and
-    /// a queued one can sit for minutes. Fail with a clear error instead.
-    const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-
     pub fn new(api_key: String) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Self::REQUEST_TIMEOUT)
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-        Self { client, api_key }
+        Self {
+            client: crate::services::openrouter::client(),
+            api_key,
+        }
     }
 
     pub async fn categorise_batch(
@@ -128,17 +122,7 @@ Transactions to categorise:
             .json(&body)
             .send()
             .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    format!(
-                        "The AI provider didn't respond within {}s — this is usually \
-                         OpenRouter queueing behind a busy provider. Try again shortly.",
-                        Self::REQUEST_TIMEOUT.as_secs()
-                    )
-                } else {
-                    format!("API request failed: {}", e)
-                }
-            })?;
+            .map_err(crate::services::openrouter::send_error)?;
 
         let status = response.status();
         let response_text = response
