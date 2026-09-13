@@ -121,6 +121,24 @@
   let editDefaultPct = $state(0);
   let editGrowthPct = $state(0);
 
+  // The explainer starts open; once collapsed it stays collapsed.
+  const HOWTO_KEY = "forecast-howto-open";
+  function readHowToOpen(): boolean {
+    try {
+      return localStorage.getItem(HOWTO_KEY) !== "0";
+    } catch {
+      return true;
+    }
+  }
+  let howToOpen = $state(readHowToOpen());
+  $effect(() => {
+    try {
+      localStorage.setItem(HOWTO_KEY, howToOpen ? "1" : "0");
+    } catch {
+      // Storage unavailable — the panel just opens each visit.
+    }
+  });
+
   const currencyFormat = new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" });
   function fmt(val: number): string { return currencyFormat.format(val); }
 
@@ -164,21 +182,46 @@
   }
 
   async function selectScenario(s: Scenario) {
+    // Re-clicking the open scenario just refreshes it in place.
+    if (selectedScenario?.id === s.id) {
+      await refreshScenarioConfig();
+      return;
+    }
     selectedScenario = s;
     loadingAdjustments = true;
     try {
-      const [adj, def, excl] = await Promise.all([
-        invoke<ScenarioAdjustmentWithPath[]>("get_scenario_adjustments", { scenarioId: s.id }),
-        invoke<ScenarioDefault | null>("get_scenario_defaults", { scenarioId: s.id }),
-        invoke<number[]>("get_scenario_excluded_categories", { scenarioId: s.id }),
-      ]);
-      adjustments = adj;
-      defaults = def;
-      excludedCategoryIds = excl;
+      await loadScenarioConfig(s.id);
     } catch (e) {
       showToast(String(e), "error");
     } finally {
       loadingAdjustments = false;
+    }
+  }
+
+  async function loadScenarioConfig(scenarioId: number) {
+    const [adj, def, excl] = await Promise.all([
+      invoke<ScenarioAdjustmentWithPath[]>("get_scenario_adjustments", { scenarioId }),
+      invoke<ScenarioDefault | null>("get_scenario_defaults", { scenarioId }),
+      invoke<number[]>("get_scenario_excluded_categories", { scenarioId }),
+    ]);
+    // Drop a late reply for a scenario the user has since switched away from.
+    if (selectedScenario?.id !== scenarioId) return;
+    adjustments = adj;
+    defaults = def;
+    excludedCategoryIds = excl;
+  }
+
+  // Re-read the open scenario after an edit WITHOUT flipping
+  // `loadingAdjustments`. Edits used to go through selectScenario, whose
+  // loading flag swapped the whole adjustments table for a "Loading…" line —
+  // that destroyed the table's scroll container and collapsed the page, so
+  // every tick or typed value threw the view back to the top of the list.
+  async function refreshScenarioConfig() {
+    if (!selectedScenario) return;
+    try {
+      await loadScenarioConfig(selectedScenario.id);
+    } catch (e) {
+      showToast(String(e), "error");
     }
   }
 
@@ -234,7 +277,7 @@
         adjustmentPct: pct,
         fixedAmount: fixed,
       });
-      await selectScenario(selectedScenario);
+      await refreshScenarioConfig();
     } catch (e) {
       showToast(String(e), "error");
     }
@@ -248,7 +291,7 @@
         categoryId: catId,
         excluded: !include,
       });
-      await selectScenario(selectedScenario);
+      await refreshScenarioConfig();
     } catch (e) {
       showToast(String(e), "error");
     }
@@ -275,7 +318,7 @@
       });
       showToast("Defaults saved.", "success");
       editingDefaults = false;
-      await selectScenario(selectedScenario);
+      await refreshScenarioConfig();
     } catch (e) {
       showToast(String(e), "error");
     }
@@ -537,6 +580,41 @@
 <div class="page">
   <h1>Forecasting</h1>
 
+  <details class="how-to" bind:open={howToOpen}>
+    <summary>How forecasting works</summary>
+    <div class="how-to-body">
+      <p>
+        A forecast looks at what you've typically earned and spent each month, then projects it
+        forward. A <strong>scenario</strong> is a "what if" version of that projection &mdash;
+        e.g. "cut dining out by 20%" or "add a $450/month car loan".
+      </p>
+      <ol>
+        <li>
+          <strong>Create a scenario</strong> and pick its <em>base period</em>: the past months
+          whose averages it starts from. A recent 6&ndash;12 months that reflect normal life work
+          best. The projection starts the month after the base period ends, so end it at your
+          latest full month.
+        </li>
+        <li>
+          <strong>Adjust it</strong> (optional). For each category, <em>% Adj</em> scales its
+          average up or down (&minus;20 = spend 20% less), <em>Fixed Amount</em> replaces it with
+          a set monthly figure, and unticking <em>Incl.</em> leaves it out entirely.
+          <em>Scenario Defaults</em> apply a % to every category you haven't adjusted, plus a
+          yearly income growth rate.
+        </li>
+        <li>
+          <strong>Generate</strong>: tick up to 3 scenarios, choose how many months ahead, and
+          compare. The dashed <em>Baseline</em> line is your whole-history averages with no
+          changes, as a reference point.
+        </li>
+      </ol>
+      <p class="how-to-tip">
+        Reading the chart: the line is <em>net</em> (income minus spending) for each month. Above
+        zero you'd save money that month; below zero you'd spend more than you earn.
+      </p>
+    </div>
+  </details>
+
   <!-- Section 1: Scenario Management -->
   <section class="section">
     <div class="section-header">
@@ -605,7 +683,7 @@
                     <th>Category</th>
                     <th class="num-col">% Adj</th>
                     <th class="num-col">Fixed Amount</th>
-                    <th></th>
+                    <th class="status-col"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -621,7 +699,7 @@
                           title={excluded ? "Excluded from this scenario" : "Included in this scenario"}
                         />
                       </td>
-                      <td class="cat-cell">{cat.path}</td>
+                      <td class="cat-cell" title={cat.path}>{cat.path}</td>
                       <td class="num-col">
                         <input
                           type="number"
@@ -650,7 +728,7 @@
                           step="0.01"
                         />
                       </td>
-                      <td>
+                      <td class="status-col">
                         {#if excluded}
                           <span class="badge badge-excluded">Excluded</span>
                         {:else if adj?.fixed_amount != null}
@@ -984,6 +1062,12 @@
   h2 { font-size: 1.25rem; font-weight: 600; color: var(--text-primary); }
   h3 { font-size: 1rem; font-weight: 600; color: var(--text-primary); margin-bottom: 0.75rem; }
 
+  .how-to { margin-bottom: 1.5rem; background: var(--accent-soft); border: 1px solid var(--border-color); border-radius: var(--radius-card); padding: 0.85rem 1.25rem; }
+  .how-to summary { cursor: pointer; font-weight: 600; font-size: 0.95rem; color: var(--nav-active-fg, var(--accent)); }
+  .how-to-body { margin-top: 0.75rem; font-size: 0.875rem; line-height: 1.55; color: var(--text-primary); max-width: 68rem; }
+  .how-to-body ol { margin: 0.6rem 0 0.6rem 1.25rem; display: flex; flex-direction: column; gap: 0.45rem; }
+  .how-to-tip { color: var(--text-secondary); }
+
   .section { margin-bottom: 2rem; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-card); padding: 1.25rem 1.5rem; box-shadow: var(--app-shadow); }
   .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem; }
 
@@ -1031,19 +1115,26 @@
   .scenario-desc { font-size: 0.8rem; color: var(--text-secondary); }
   .scenario-dates { font-size: 0.75rem; color: var(--text-muted); }
 
-  .config-grid { display: grid; grid-template-columns: 1fr 320px; gap: 1rem; }
+  /* The defaults panel only holds two short rows, so it gives up width to the
+     adjustments table, where category names were being clipped. */
+  .config-grid { display: grid; grid-template-columns: 1fr 260px; gap: 1rem; }
   @media (max-width: 800px) { .config-grid { grid-template-columns: 1fr; } }
   .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
 
   .adj-table-wrap { max-height: 400px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 10px; }
   .adj-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
-  .adj-table th { text-align: left; padding: 0.5rem 0.65rem; background: var(--bg-secondary); border-bottom: 1px solid var(--border-color); font-weight: 600; color: var(--text-primary); position: sticky; top: 0; }
-  .adj-table td { padding: 0.4rem 0.65rem; border-bottom: 1px solid var(--border-color); color: var(--text-primary); }
-  .cat-cell { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .adj-table th { text-align: left; padding: 0.5rem 0.5rem; background: var(--bg-secondary); border-bottom: 1px solid var(--border-color); font-weight: 600; color: var(--text-primary); position: sticky; top: 0; z-index: 1; white-space: nowrap; }
+  .adj-table td { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); color: var(--text-primary); }
+  /* Every column but Category is sized to its content (width:1% + nowrap), so
+     the category path gets all the leftover width — and wraps onto a second
+     line rather than being clipped at a fixed 200px. */
+  .cat-cell { white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
+  .adj-table .num-col, .status-col { width: 1%; white-space: nowrap; }
+  .adj-table th.num-col { text-align: right; }
   .incl-col { width: 1%; text-align: center; white-space: nowrap; }
   .row-excluded .cat-cell { color: var(--text-muted); text-decoration: line-through; }
   .num-col { text-align: right; }
-  .adj-input { width: 80px; padding: 0.3rem 0.4rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.8rem; text-align: right; }
+  .adj-input { width: 72px; padding: 0.3rem 0.4rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.8rem; text-align: right; }
 
   .badge { font-size: 0.7rem; padding: 0.15rem 0.4rem; border-radius: 4px; font-weight: 500; }
   .badge-default { background: var(--bg-secondary); color: var(--text-secondary); }
