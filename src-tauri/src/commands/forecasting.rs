@@ -11,17 +11,18 @@ pub async fn create_scenario(
     pool: State<'_, SqlitePool>,
     name: String,
     description: Option<String>,
-    horizon: String,
     base_start_date: String,
     base_end_date: String,
 ) -> Result<Scenario, String> {
+    // No horizon: the projection is always monthly and its length comes from
+    // the "Months Ahead" slider, so the old Monthly/Quarterly/Yearly picker
+    // changed nothing. The column keeps its 'monthly' default.
     let result = sqlx::query(
-        "INSERT INTO scenarios (name, description, horizon, base_start_date, base_end_date)
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO scenarios (name, description, base_start_date, base_end_date)
+         VALUES (?, ?, ?, ?)",
     )
     .bind(&name)
     .bind(&description)
-    .bind(&horizon)
     .bind(&base_start_date)
     .bind(&base_end_date)
     .execute(&*pool)

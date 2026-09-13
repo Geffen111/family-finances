@@ -9,7 +9,6 @@
     id: number;
     name: string;
     description: string | null;
-    horizon: string;
     base_start_date: string;
     base_end_date: string;
     created_at: string;
@@ -105,7 +104,6 @@
   let deleteScenarioName = $state("");
   let newName = $state("");
   let newDesc = $state("");
-  let newHorizon = $state("monthly");
   let newStart = $state("");
   let newEnd = $state("");
 
@@ -231,7 +229,6 @@
       const s = await invoke<Scenario>("create_scenario", {
         name: newName.trim(),
         description: newDesc.trim() || null,
-        horizon: newHorizon,
         baseStartDate: newStart,
         baseEndDate: newEnd,
       });
@@ -993,14 +990,6 @@
         Description
         <input type="text" bind:value={newDesc} placeholder="Optional description" />
       </label>
-      <label>
-        Horizon
-        <select bind:value={newHorizon}>
-          <option value="monthly">Monthly</option>
-          <option value="quarterly">Quarterly</option>
-          <option value="yearly">Yearly</option>
-        </select>
-      </label>
       <div class="date-row">
         <label>
           Base Start
@@ -1205,13 +1194,12 @@
     color: var(--text-primary);
     margin-bottom: 0.75rem;
   }
-  .modal input, .modal select {
+  .modal input {
     padding: 0.5rem 0.65rem;
     border: 1px solid var(--border-color);
     border-radius: 10px;
     font-size: 0.9rem;
   }
-  .modal select { background: var(--bg-card); }
   .hint { font-size: 0.75rem; color: var(--text-muted); font-weight: 400; }
   .date-row { display: flex; gap: 0.75rem; }
   .date-row label { flex: 1; }
