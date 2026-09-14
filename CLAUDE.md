@@ -20,6 +20,8 @@ PATH="$USERPROFILE/.cargo/bin:$PATH" RUSTFLAGS="" cargo check   # run in src-tau
 PATH="/c/Program Files/nodejs:$APPDATA/npm:$PATH" pnpm check    # want 0 errors / 0 warnings
 pnpm build                                                       # vite build, what CI runs
 ```
+Backend tests: `cargo test --lib` in `src-tauri/` (in-memory SQLite; currently the forecast
+base-period maths). CI doesn't run them, so run them when touching that code.
 `pnpm check` (svelte-check) does NOT gate the build, but keep it at 0/0. `link.exe` is
 present locally, so `cargo check` works.
 
@@ -93,6 +95,11 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   non-category aggregation still read the base `transactions` table (splits sum to the
   debit, so totals are identical). Splits are debit-only and validated to sum to the
   transaction's debit.
+- **Forecast base period:** category averages divide by `base_period_months`
+  (`services/forecast.rs`) — the period clamped to the imported data's date range, in days
+  ÷ 30.44. Don't go back to counting whole months: `end_month − start_month` made
+  1 Jan–30 Jun "5 months" and inflated every average by 20%. In scenario adjustments, 0% with
+  no fixed amount deletes the row, so the category uses the scenario's default %.
 - **Budget rollover:** `categories.rollover` flag; carryover is computed on the fly in
   `get_budget_status` (monthly_budget × months since the category's first txn − spend
   before the period), not stored.

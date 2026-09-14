@@ -172,7 +172,7 @@ pub async fn compare_scenarios(
     })
 }
 
-async fn compute_baselines(
+pub async fn compute_baselines(
     pool: &SqlitePool,
     start_date: &str,
     end_date: &str,
@@ -196,7 +196,7 @@ async fn compute_baselines(
     .await
     .map_err(|e| format!("DB error baselines: {}", e))?;
 
-    let num_months = month_count(start_date, use_end).max(1);
+    let (num_months, _, _) = base_period_months(pool, start_date, use_end).await?;
 
     let mut baselines = Vec::new();
     for (cid, cname, debit, credit) in &rows {
@@ -211,7 +211,7 @@ async fn compute_baselines(
             baselines.push(CategoryBaseline {
                 category_id,
                 category_path: category_path.clone(),
-                monthly_avg: credit / num_months as f64,
+                monthly_avg: credit / num_months,
                 is_income: true,
             });
         }
@@ -219,7 +219,7 @@ async fn compute_baselines(
             baselines.push(CategoryBaseline {
                 category_id,
                 category_path,
-                monthly_avg: debit / num_months as f64,
+                monthly_avg: debit / num_months,
                 is_income: false,
             });
         }
@@ -266,16 +266,48 @@ async fn build_base_scenario(pool: &SqlitePool) -> Result<Scenario, String> {
     })
 }
 
-fn month_count(start: &str, end: &str) -> i64 {
-    let s = NaiveDate::parse_from_str(start, "%Y-%m-%d").ok();
-    let e = NaiveDate::parse_from_str(end, "%Y-%m-%d").ok();
-    match (s, e) {
-        (Some(sd), Some(ed)) => {
-            let months = (ed.year() - sd.year()) * 12 + (ed.month() as i32 - sd.month() as i32);
-            months.max(1) as i64
-        }
-        _ => 1,
+/// Average Gregorian month length in days (365.2425 / 12).
+const DAYS_PER_MONTH: f64 = 30.436875;
+
+/// How many months of data a base period's averages are spread over, plus the
+/// dates actually covered: `(months, data_start, data_end)`.
+///
+/// This used to be `end_month - start_month`, which isn't inclusive: 1 Jan to
+/// 30 Jun counted as 5 months, inflating every category average by 20%. The
+/// period is now clamped to the dates we hold transactions for — imports are
+/// monthly, so a period ending "today" usually runs past the last import, and
+/// averaging over days with no data yet would understate everything — then
+/// measured in days and converted at the average month length.
+pub async fn base_period_months(
+    pool: &SqlitePool,
+    start: &str,
+    end: &str,
+) -> Result<(f64, String, String), String> {
+    let (min_date, max_date) = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT MIN(date), MAX(date) FROM transactions",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("DB error base period: {}", e))?;
+
+    let parse = |d: &str| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok();
+    let (Some(mut s), Some(mut e)) = (parse(start), parse(end)) else {
+        return Ok((1.0, start.to_string(), end.to_string()));
+    };
+    if let Some(first) = min_date.as_deref().and_then(parse) {
+        s = s.max(first);
     }
+    if let Some(last) = max_date.as_deref().and_then(parse) {
+        e = e.min(last);
+    }
+    // No overlap with the data at all: there are no rows to average, so any
+    // positive divisor gives the same (zero) result.
+    let days = ((e - s).num_days() + 1).max(1);
+    Ok((
+        days as f64 / DAYS_PER_MONTH,
+        s.format("%Y-%m-%d").to_string(),
+        e.format("%Y-%m-%d").to_string(),
+    ))
 }
 
 fn add_months(date: &NaiveDate, n: i64) -> NaiveDate {
@@ -298,5 +330,122 @@ fn days_in_month(year: i32, month: u32) -> u32 {
             }
         }
         _ => 30,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    /// An in-memory DB holding transactions on each of the given dates.
+    async fn pool_with_dates(dates: &[&str]) -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE transactions (date TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        for d in dates {
+            sqlx::query("INSERT INTO transactions (date) VALUES (?)")
+                .bind(d)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        pool
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 0.01
+    }
+
+    #[tokio::test]
+    async fn full_half_year_counts_six_months_not_five() {
+        // Regression: `end_month - start_month` made this 5 (+20% averages).
+        let pool = pool_with_dates(&["2025-12-01", "2026-12-31"]).await;
+        let (m, s, e) = base_period_months(&pool, "2026-01-01", "2026-06-30").await.unwrap();
+        assert!(close(m, 181.0 / DAYS_PER_MONTH), "got {m}");
+        assert!(m > 5.9 && m < 6.0);
+        assert_eq!((s.as_str(), e.as_str()), ("2026-01-01", "2026-06-30"));
+    }
+
+    #[tokio::test]
+    async fn period_past_last_import_is_clamped_to_the_data() {
+        // Base period ends "today" but the last import only reaches 31 Aug.
+        let pool = pool_with_dates(&["2024-05-01", "2026-08-31"]).await;
+        let (m, s, e) = base_period_months(&pool, "2026-07-01", "2026-09-13").await.unwrap();
+        assert_eq!((s.as_str(), e.as_str()), ("2026-07-01", "2026-08-31"));
+        assert!(close(m, 62.0 / DAYS_PER_MONTH), "got {m}");
+    }
+
+    #[tokio::test]
+    async fn period_before_first_transaction_is_clamped_at_the_start() {
+        let pool = pool_with_dates(&["2026-03-01", "2026-12-31"]).await;
+        let (m, s, _) = base_period_months(&pool, "2026-01-01", "2026-03-31").await.unwrap();
+        assert_eq!(s, "2026-03-01");
+        assert!(close(m, 31.0 / DAYS_PER_MONTH), "got {m}");
+    }
+
+    #[tokio::test]
+    async fn single_calendar_month_is_about_one() {
+        let pool = pool_with_dates(&["2026-01-01", "2026-12-31"]).await;
+        let (m, _, _) = base_period_months(&pool, "2026-01-01", "2026-01-31").await.unwrap();
+        assert!(close(m, 31.0 / DAYS_PER_MONTH), "got {m}");
+    }
+
+    /// End to end through the real schema (every migration, including the
+    /// tx_effective view): six months at $600/month must average $600 — the
+    /// old month count divided by 5 and reported $720.
+    #[tokio::test]
+    async fn baselines_average_the_real_monthly_amounts() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        for sql in [
+            "INSERT INTO accounts (id, name) VALUES (1, 'Everyday')",
+            "INSERT INTO categories (id, name) VALUES (1, 'Food'), (3, 'Income'), (5, 'Other')",
+            "INSERT INTO categories (id, name, parent_id) VALUES (2, 'Groceries', 1), (4, 'Salary', 3)",
+            // Bookends in another category: real data spans years, so the
+            // base period sits well inside the imported range.
+            "INSERT INTO transactions (account_id, category_id, date, description, debit)
+             VALUES (1, 5, '2025-06-01', 'older', 10), (1, 5, '2026-12-31', 'newer', 10)",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+        for m in 1..=6 {
+            sqlx::query(
+                "INSERT INTO transactions (account_id, category_id, date, description, debit, credit)
+                 VALUES (1, 2, ?, 'Coles', 600, 0), (1, 4, ?, 'Pay', 0, 5000)",
+            )
+            .bind(format!("2026-{m:02}-15"))
+            .bind(format!("2026-{m:02}-10"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let bl = compute_baselines(&pool, "2026-01-01", "2026-06-30").await.unwrap();
+        let find = |cid: i64, income: bool| {
+            bl.iter().find(|b| b.category_id == cid && b.is_income == income).unwrap().monthly_avg
+        };
+        let groceries = find(2, false);
+        let salary = find(4, true);
+        // 181 days is 5.95 average-length months, so within ~1% of the flat figure.
+        assert!((groceries - 600.0).abs() < 6.0, "groceries averaged {groceries}");
+        assert!((salary - 5000.0).abs() < 50.0, "salary averaged {salary}");
+    }
+
+    #[tokio::test]
+    async fn no_overlap_with_data_still_gives_a_positive_divisor() {
+        let pool = pool_with_dates(&["2026-06-01"]).await;
+        let (m, _, _) = base_period_months(&pool, "2020-01-01", "2020-12-31").await.unwrap();
+        assert!(m > 0.0);
     }
 }
