@@ -1,5 +1,11 @@
+# Approve esbuild's install script (it fetches the platform binary Vite needs).
+# pnpm 11+ reads `allowBuilds`; this entry used to hold pnpm's own unfilled
+# placeholder ("set this to true or false"), which counts as NOT approved -- so
+# every install ended in ERR_PNPM_IGNORED_BUILDS. pnpm 11 let CI paper over it
+# with `pnpm rebuild esbuild`; pnpm 12 closed that loophole and broke the build.
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: true
+# Older pnpm spelling of the same approval.
 onlyBuiltDependencies:
   - esbuild
 # Don't re-run `pnpm install` before every `pnpm <script>` invocation.

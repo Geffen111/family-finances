@@ -39,18 +39,18 @@ jobs:
 
       - name: Install pnpm
         shell: powershell
-        run: npm install -g pnpm
+        # Pinned to a major: unpinned, this floated to pnpm 12 the day it
+        # shipped, and 12 changed build-script approval enough to fail the build.
+        run: npm install -g pnpm@12
 
       - name: Install frontend deps
         shell: powershell
         run: |
-          # pnpm here refuses to run dependency build scripts and exits 1,
-          # but node_modules is fully populated before that error. Tolerate
-          # the exit, then build esbuild explicitly (rebuild bypasses the
-          # build-approval gate). Ending on a success keeps the step green.
-          pnpm install
-          Write-Host "pnpm install finished with exit code $LASTEXITCODE"
-          pnpm rebuild esbuild
+          # esbuild's install script is approved in pnpm-workspace.yaml
+          # (allowBuilds), so a clean install exits 0. It used to exit 1 and
+          # this step tolerated that, which would also have hidden any real
+          # install failure -- now any non-zero exit fails the step.
+          pnpm install --frozen-lockfile
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build Tauri app (x64)

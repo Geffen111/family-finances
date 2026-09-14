@@ -34,11 +34,14 @@ The app's in-app "update available" banner (sidebar) compares the commit Vite st
 (`__APP_COMMIT__`, see `vite.config.js`) against `build-info.json`; needs the repo public.
 
 CI quirks that are load-bearing — don't "simplify" these away:
-- The CI pnpm is security-wrapped: it hard-fails on esbuild's build script and re-runs
-  `pnpm install` before every script. Mitigated by `pnpm rebuild esbuild` in the install
-  step + `npm_config_verify_deps_before_run: "false"`. pnpm 11 no longer reads the
-  package.json `pnpm` field — project settings (`onlyBuiltDependencies`, `overrides`, e.g.
-  the `cookie` security pin) live in `pnpm-workspace.yaml`.
+- **esbuild's build script must stay approved** via `allowBuilds: { esbuild: true }` in
+  `pnpm-workspace.yaml`. An unapproved (or placeholder) entry makes every `pnpm install`
+  exit 1 with `ERR_PNPM_IGNORED_BUILDS`; pnpm 12 also blocks `pnpm rebuild` from working
+  around it. CI pins `pnpm@12` (an unpinned install floated to 12 and broke the build) and
+  runs a strict `pnpm install --frozen-lockfile`. `npm_config_verify_deps_before_run:
+  "false"` stops pnpm re-running install before every script. pnpm 11+ doesn't read the
+  package.json `pnpm` field — project settings (`allowBuilds`, `overrides`, e.g. the
+  `cookie` security pin) live in `pnpm-workspace.yaml`.
 - `rustflags: ""` on the Rust setup step (the action defaults to `-D warnings`, which would
   fail the build on any warning).
 - ARM64 is a second `pnpm tauri build --target aarch64-pc-windows-msvc`; its bundles live
