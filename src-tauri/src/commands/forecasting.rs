@@ -14,6 +14,7 @@ pub async fn create_scenario(
     base_start_date: String,
     base_end_date: String,
 ) -> Result<Scenario, String> {
+    validate_base_period(&base_start_date, &base_end_date)?;
     // No horizon: the projection is always monthly and its length comes from
     // the "Months Ahead" slider, so the old Monthly/Quarterly/Yearly picker
     // changed nothing. The column keeps its 'monthly' default.
@@ -77,16 +78,25 @@ pub async fn update_scenario(
     base_end_date: Option<String>,
 ) -> Result<Scenario, String> {
     let existing = get_scenario(pool.clone(), id).await?;
+    let start = base_start_date.unwrap_or(existing.base_start_date);
+    let end = base_end_date.unwrap_or(existing.base_end_date);
+    validate_base_period(&start, &end)?;
+    // None keeps the current description; an emptied one clears it.
+    let description = match description {
+        Some(d) if d.trim().is_empty() => None,
+        Some(d) => Some(d.trim().to_string()),
+        None => existing.description,
+    };
 
     sqlx::query(
         "UPDATE scenarios SET name = ?, description = ?, horizon = ?, base_start_date = ?, base_end_date = ?
          WHERE id = ?",
     )
     .bind(name.unwrap_or(existing.name))
-    .bind(description.or(existing.description))
+    .bind(description)
     .bind(horizon.unwrap_or(existing.horizon))
-    .bind(base_start_date.unwrap_or(existing.base_start_date))
-    .bind(base_end_date.unwrap_or(existing.base_end_date))
+    .bind(start)
+    .bind(end)
     .bind(id)
     .execute(&*pool)
     .await
@@ -134,7 +144,21 @@ pub async fn save_scenario_adjustment(
     category_id: i64,
     adjustment_pct: f64,
     fixed_amount: Option<f64>,
-) -> Result<ScenarioAdjustment, String> {
+) -> Result<Option<ScenarioAdjustment>, String> {
+    // 0% with no fixed amount is what the UI shows as "Default", so make it
+    // mean that: drop the row and let the scenario's default % apply. Storing
+    // it pinned the category at 0% — ignoring the default — while the badge
+    // still claimed it was using the default.
+    if adjustment_pct == 0.0 && fixed_amount.is_none() {
+        sqlx::query("DELETE FROM scenario_adjustments WHERE scenario_id = ? AND category_id = ?")
+            .bind(scenario_id)
+            .bind(category_id)
+            .execute(&*pool)
+            .await
+            .map_err(|e| format!("DB error clearing adjustment: {}", e))?;
+        return Ok(None);
+    }
+
     sqlx::query(
         "INSERT INTO scenario_adjustments (scenario_id, category_id, adjustment_pct, fixed_amount)
          VALUES (?, ?, ?, ?)
@@ -159,7 +183,78 @@ pub async fn save_scenario_adjustment(
     .await
     .map_err(|e| format!("DB error fetching adjustment: {}", e))?;
 
-    Ok(adj)
+    Ok(Some(adj))
+}
+
+/// One category's monthly averages over a scenario's base period — the
+/// figures its % adjustments scale, shown next to each category so you can
+/// see what it projects at before changing anything.
+#[derive(Debug, serde::Serialize)]
+pub struct CategoryAverage {
+    pub category_id: i64,
+    pub monthly_income: f64,
+    pub monthly_expense: f64,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ScenarioBaselines {
+    /// Months of data the averages cover (the base period clamped to the
+    /// transactions actually imported).
+    pub months: f64,
+    pub data_start: String,
+    pub data_end: String,
+    pub categories: Vec<CategoryAverage>,
+}
+
+#[tauri::command]
+pub async fn get_scenario_baselines(
+    pool: State<'_, SqlitePool>,
+    scenario_id: i64,
+) -> Result<ScenarioBaselines, String> {
+    let scenario = get_scenario(pool.clone(), scenario_id).await?;
+    let (months, data_start, data_end) = services::forecast::base_period_months(
+        &pool,
+        &scenario.base_start_date,
+        &scenario.base_end_date,
+    )
+    .await?;
+    let baselines = services::forecast::compute_baselines(
+        &pool,
+        &scenario.base_start_date,
+        &scenario.base_end_date,
+    )
+    .await?;
+
+    // compute_baselines yields separate income and expense rows per category.
+    let mut by_cat: std::collections::HashMap<i64, CategoryAverage> = Default::default();
+    for bl in baselines {
+        let entry = by_cat.entry(bl.category_id).or_insert(CategoryAverage {
+            category_id: bl.category_id,
+            monthly_income: 0.0,
+            monthly_expense: 0.0,
+        });
+        if bl.is_income {
+            entry.monthly_income += bl.monthly_avg;
+        } else {
+            entry.monthly_expense += bl.monthly_avg;
+        }
+    }
+
+    Ok(ScenarioBaselines {
+        months,
+        data_start,
+        data_end,
+        categories: by_cat.into_values().collect(),
+    })
+}
+
+fn validate_base_period(start: &str, end: &str) -> Result<(), String> {
+    let parse = |d: &str| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d");
+    match (parse(start), parse(end)) {
+        (Ok(s), Ok(e)) if s <= e => Ok(()),
+        (Ok(_), Ok(_)) => Err("The base period must end on or after its start date.".to_string()),
+        _ => Err("The base period needs a valid start and end date.".to_string()),
+    }
 }
 
 #[tauri::command]

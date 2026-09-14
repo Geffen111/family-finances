@@ -38,6 +38,20 @@
     income_growth_pct: number;
   }
 
+  // A category's monthly averages over the open scenario's base period.
+  interface CategoryAverage {
+    category_id: number;
+    monthly_income: number;
+    monthly_expense: number;
+  }
+
+  interface ScenarioBaselines {
+    months: number; // months of data the averages cover
+    data_start: string; // base period clamped to the imported data
+    data_end: string;
+    categories: CategoryAverage[];
+  }
+
   interface CategoryWithPath {
     id: number;
     name: string;
@@ -93,6 +107,8 @@
   // Category IDs excluded from the selected scenario's projection (forecast-only,
   // independent of the global exclude_from_budget flag).
   let excludedCategoryIds = $state<number[]>([]);
+  let baselines = $state<ScenarioBaselines | null>(null);
+  let avgByCategory = $derived(new Map((baselines?.categories ?? []).map((c) => [c.category_id, c])));
 
   let loadingScenarios = $state(false);
   let loadingCategories = $state(false);
@@ -106,6 +122,13 @@
   let newDesc = $state("");
   let newStart = $state("");
   let newEnd = $state("");
+
+  // Edit scenario (name, description, base period)
+  let showEditModal = $state(false);
+  let editName = $state("");
+  let editDesc = $state("");
+  let editStart = $state("");
+  let editEnd = $state("");
 
   // Forecast controls
   let monthsAhead = $state(12);
@@ -197,16 +220,18 @@
   }
 
   async function loadScenarioConfig(scenarioId: number) {
-    const [adj, def, excl] = await Promise.all([
+    const [adj, def, excl, base] = await Promise.all([
       invoke<ScenarioAdjustmentWithPath[]>("get_scenario_adjustments", { scenarioId }),
       invoke<ScenarioDefault | null>("get_scenario_defaults", { scenarioId }),
       invoke<number[]>("get_scenario_excluded_categories", { scenarioId }),
+      invoke<ScenarioBaselines>("get_scenario_baselines", { scenarioId }),
     ]);
     // Drop a late reply for a scenario the user has since switched away from.
     if (selectedScenario?.id !== scenarioId) return;
     adjustments = adj;
     defaults = def;
     excludedCategoryIds = excl;
+    baselines = base;
   }
 
   // Re-read the open scenario after an edit WITHOUT flipping
@@ -257,6 +282,7 @@
         adjustments = [];
         defaults = null;
         excludedCategoryIds = [];
+        baselines = null;
       }
       showDeleteScenario = false;
       await loadScenarios();
@@ -288,6 +314,64 @@
         categoryId: catId,
         excluded: !include,
       });
+      await refreshScenarioConfig();
+    } catch (e) {
+      showToast(String(e), "error");
+    }
+  }
+
+  const wholeDollars = new Intl.NumberFormat("en-AU", {
+    style: "currency",
+    currency: "AUD",
+    maximumFractionDigits: 0,
+  });
+
+  // A category's base-period monthly average, on whichever side dominates
+  // (spending for most; income for e.g. salary). null = no transactions in the
+  // base period, so it projects at $0 unless given a fixed amount.
+  function categoryAverage(catId: number): { amount: number; income: boolean } | null {
+    const a = avgByCategory.get(catId);
+    if (!a || (a.monthly_income === 0 && a.monthly_expense === 0)) return null;
+    return a.monthly_income > a.monthly_expense
+      ? { amount: a.monthly_income, income: true }
+      : { amount: a.monthly_expense, income: false };
+  }
+
+  // What a category projects at each month if Fixed Amount is left blank.
+  // Mirrors calculate_forecast: a saved % adjustment wins, otherwise the
+  // scenario's default % applies. (Income growth then compounds on top of
+  // income categories month by month.)
+  function projectedAmount(catId: number, adj: ScenarioAdjustmentWithPath | undefined): number {
+    const avg = categoryAverage(catId);
+    if (!avg) return 0;
+    const pct = adj ? adj.adjustment_pct : (defaults?.default_adjustment_pct ?? 0);
+    return avg.amount * (1 + pct / 100);
+  }
+
+  function openEditScenario() {
+    if (!selectedScenario) return;
+    editName = selectedScenario.name;
+    editDesc = selectedScenario.description ?? "";
+    editStart = selectedScenario.base_start_date;
+    editEnd = selectedScenario.base_end_date;
+    showEditModal = true;
+  }
+
+  async function saveEditScenario() {
+    if (!selectedScenario || !editName.trim() || !editStart || !editEnd || editEnd < editStart) return;
+    try {
+      const updated = await invoke<Scenario>("update_scenario", {
+        id: selectedScenario.id,
+        name: editName.trim(),
+        description: editDesc,
+        baseStartDate: editStart,
+        baseEndDate: editEnd,
+      });
+      selectedScenario = updated;
+      scenarios = scenarios.map((sc) => (sc.id === updated.id ? updated : sc));
+      showEditModal = false;
+      showToast("Scenario updated.", "success");
+      // A new base period means new averages for every category.
       await refreshScenarioConfig();
     } catch (e) {
       showToast(String(e), "error");
@@ -570,6 +654,7 @@
 <svelte:window onkeydown={(e) => {
   if (e.key !== "Escape") return;
   showNewModal = false;
+  showEditModal = false;
   editingDefaults = false;
   showDeleteScenario = false;
 }} />
@@ -590,12 +675,14 @@
           <strong>Create a scenario</strong> and pick its <em>base period</em>: the past months
           whose averages it starts from. A recent 6&ndash;12 months that reflect normal life work
           best. The projection starts the month after the base period ends, so end it at your
-          latest full month.
+          latest full month. You can change it later with <em>Edit scenario</em>.
         </li>
         <li>
-          <strong>Adjust it</strong> (optional). For each category, <em>% Adj</em> scales its
-          average up or down (&minus;20 = spend 20% less), <em>Fixed Amount</em> replaces it with
-          a set monthly figure, and unticking <em>Incl.</em> leaves it out entirely.
+          <strong>Adjust it</strong> (optional). <em>Avg /mo</em> shows each category's monthly
+          average from the base period, and the greyed figure in <em>Fixed Amount</em> is what it
+          will project at if you change nothing. <em>% Adj</em> scales the average up or down
+          (&minus;20 = spend 20% less), <em>Fixed Amount</em> replaces it with a set monthly
+          figure, and unticking <em>Incl.</em> leaves it out entirely.
           <em>Scenario Defaults</em> apply a % to every category you haven't adjusted, plus a
           yearly income growth rate.
         </li>
@@ -659,8 +746,25 @@
     <section class="section">
       <div class="section-header">
         <h2>Configuration: {selectedScenario.name}</h2>
-        <button class="btn btn-sm" onclick={() => { selectedScenario = null; }}>Close</button>
+        <div class="header-actions">
+          <button class="btn btn-sm" onclick={openEditScenario}>Edit scenario</button>
+          <button class="btn btn-sm" onclick={() => { selectedScenario = null; }}>Close</button>
+        </div>
       </div>
+      <p class="base-period">
+        <strong>Base period:</strong>
+        {formatDate(selectedScenario.base_start_date)} &rarr; {formatDate(selectedScenario.base_end_date)}
+        {#if baselines}
+          <span class="base-period-note">
+            {#if baselines.data_start !== selectedScenario.base_start_date || baselines.data_end !== selectedScenario.base_end_date}
+              &middot; averages cover the {baselines.months.toFixed(1)} months of it you have data for
+              ({formatDate(baselines.data_start)} &rarr; {formatDate(baselines.data_end)})
+            {:else}
+              &middot; averages cover {baselines.months.toFixed(1)} months
+            {/if}
+          </span>
+        {/if}
+      </p>
 
       <div class="config-grid">
         <div class="config-panel">
@@ -678,8 +782,9 @@
                   <tr>
                     <th class="incl-col" title="Include this category in this scenario's forecast">Incl.</th>
                     <th>Category</th>
+                    <th class="num-col" title="Average per month over the base period — the figure a % adjustment scales">Avg /mo</th>
                     <th class="num-col">% Adj</th>
-                    <th class="num-col">Fixed Amount</th>
+                    <th class="num-col" title="Leave blank to use the average (adjusted by any %) — shown greyed in the box">Fixed Amount</th>
                     <th class="status-col"></th>
                   </tr>
                 </thead>
@@ -687,6 +792,8 @@
                   {#each adjustableCategories as cat (cat.id)}
                     {@const adj = adjustments.find((a) => a.category_id === cat.id)}
                     {@const excluded = excludedCategoryIds.includes(cat.id)}
+                    {@const avg = categoryAverage(cat.id)}
+                    {@const projected = projectedAmount(cat.id, adj)}
                     <tr class:row-excluded={excluded}>
                       <td class="incl-col">
                         <input
@@ -697,6 +804,15 @@
                         />
                       </td>
                       <td class="cat-cell" title={cat.path}>{cat.path}</td>
+                      <td
+                        class="num-col avg-cell"
+                        class:avg-income={avg?.income}
+                        title={avg
+                          ? `Averaged ${wholeDollars.format(avg.amount)} ${avg.income ? "income" : "spending"} a month over the base period`
+                          : "No transactions in the base period, so this projects at $0 unless you set a fixed amount"}
+                      >
+                        {#if avg}{avg.income ? "+" : ""}{wholeDollars.format(avg.amount)}{:else}&mdash;{/if}
+                      </td>
                       <td class="num-col">
                         <input
                           type="number"
@@ -715,7 +831,10 @@
                           type="number"
                           class="adj-input"
                           value={adj?.fixed_amount ?? ""}
-                          placeholder="auto"
+                          placeholder={wholeDollars.format(projected)}
+                          title={adj?.fixed_amount != null
+                            ? "Fixed monthly amount — clear it to go back to the average"
+                            : `Left blank, this projects at ${wholeDollars.format(projected)} a month`}
                           disabled={excluded}
                           onchange={(e) => {
                             const raw = (e.target as HTMLInputElement).value;
@@ -1002,7 +1121,50 @@
       </div>
       <div class="modal-actions">
         <button class="btn" onclick={() => { showNewModal = false; }}>Cancel</button>
-        <button class="btn btn-primary" onclick={handleCreate} disabled={!newName.trim() || !newStart || !newEnd}>Save</button>
+        <button class="btn btn-primary" onclick={handleCreate} disabled={!newName.trim() || !newStart || !newEnd || newEnd < newStart}>Save</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Edit Scenario Modal -->
+{#if showEditModal}
+  <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) showEditModal = false; }}>
+    <div class="modal" role="dialog" aria-modal="true" tabindex="-1">
+      <h2>Edit Scenario</h2>
+      <label>
+        Name
+        <input type="text" bind:value={editName} />
+      </label>
+      <label>
+        Description
+        <input type="text" bind:value={editDesc} placeholder="Optional description" />
+      </label>
+      <div class="date-row">
+        <label>
+          Base Start
+          <input type="date" bind:value={editStart} />
+        </label>
+        <label>
+          Base End
+          <input type="date" bind:value={editEnd} />
+        </label>
+      </div>
+      {#if editStart && editEnd && editEnd < editStart}
+        <p class="field-error">The base period must end on or after its start date.</p>
+      {:else}
+        <p class="hint">
+          Changing the base period recalculates every category's average. Your % adjustments,
+          fixed amounts and exclusions are kept.
+        </p>
+      {/if}
+      <div class="modal-actions">
+        <button class="btn" onclick={() => { showEditModal = false; }}>Cancel</button>
+        <button
+          class="btn btn-primary"
+          onclick={saveEditScenario}
+          disabled={!editName.trim() || !editStart || !editEnd || editEnd < editStart}
+        >Save</button>
       </div>
     </div>
   </div>
@@ -1120,6 +1282,13 @@
   .cat-cell { white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
   .adj-table .num-col, .status-col { width: 1%; white-space: nowrap; }
   .adj-table th.num-col { text-align: right; }
+  .avg-cell { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+  .avg-income { color: var(--pos); }
+  .row-excluded .avg-cell { color: var(--text-muted); }
+  .header-actions { display: flex; gap: 0.5rem; }
+  .base-period { font-size: 0.85rem; color: var(--text-primary); margin: -0.4rem 0 1rem; }
+  .base-period-note { color: var(--text-secondary); }
+  .field-error { font-size: 0.8rem; color: var(--neg); margin-top: 0.25rem; }
   .incl-col { width: 1%; text-align: center; white-space: nowrap; }
   .row-excluded .cat-cell { color: var(--text-muted); text-decoration: line-through; }
   .num-col { text-align: right; }

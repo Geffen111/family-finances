@@ -69,6 +69,7 @@ pub fn run() {
             commands::forecasting::update_scenario,
             commands::forecasting::delete_scenario,
             commands::forecasting::save_scenario_adjustment,
+            commands::forecasting::get_scenario_baselines,
             commands::forecasting::get_scenario_adjustments,
             commands::forecasting::get_scenario_excluded_categories,
             commands::forecasting::set_scenario_category_exclusion,
