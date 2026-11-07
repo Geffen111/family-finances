@@ -8,7 +8,9 @@ the SQLite DB stays on the user's machine.
 - **Shell:** Tauri v2 (Rust backend, `src-tauri/`)
 - **Frontend:** SvelteKit 5 + TypeScript + Chart.js (`src/routes/`), static adapter → `build/`
 - **DB:** SQLite via `sqlx` (bundled), migrations in `src-tauri/migrations/`
-- **AI:** OpenRouter (`deepseek/deepseek-v4-flash`) for categorisation + insights; key entered in Settings, stored in AppData
+- **AI:** OpenRouter for categorisation + insights + Ask; model picked in Settings
+  (live `/models` list, default `deepseek/deepseek-v4-flash`) with an optional
+  fallback model; key entered in Settings, stored in AppData
 - **Package manager:** pnpm
 
 ## Verifying changes (do this before committing)
@@ -82,9 +84,18 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   provider. LLM batches are 25 transactions (bigger risks truncating the reply at
   `max_tokens: 4096`, which fails the run on a JSON parse error) and up to 4 run
   concurrently.
-- **OpenRouter calls** build their client via `services/openrouter.rs` (`client()` has a
-  120s timeout; `send_error` names a timeout as provider queueing). Never use a bare
-  `reqwest::Client::new()` — it has no timeout, so a stalled provider hung the UI.
+- **OpenRouter calls** all go through `services/openrouter.rs`. Never use a bare
+  `reqwest::Client::new()` — it has no timeout, so a stalled provider hung the UI; one
+  process-wide client (120s timeout) is shared, and `send_error` names a timeout as
+  provider queueing. The model is **not** a constant: `model()` reads the `ai_model`
+  setting (falling back to `DEFAULT_MODEL`) and `fallback_model()` the `ai_fallback_model`
+  one. Call `chat_parsed` (or `chat_text`), which does the parse *inside* the attempt, so
+  a reply that fails to parse counts as a failed attempt and the fallback model gets a go;
+  it returns an `Answer<T>` carrying which model answered. Don't send a model id directly
+  except via `chat_once`.
+- **Settings file:** `commands/settings.rs` reads/writes `settings.json` through
+  `load`/`read_str`/`write_str` — add a setting with a pair of commands over those, not
+  another read-modify-write copy. `read_str` treats an empty string as unset.
 - **`normalize_desc`** (`commands/categorise.rs`, `pub`) reduces a bank line to a stable
   merchant key; reused by recurring detection. Reuse it, don't reinvent.
 - **`tx_effective` view** (migration 15) explodes split transactions into one row per
