@@ -1,0 +1,9 @@
+# `cargo audit` reads Cargo.lock, which lists every *potential* dependency of a
+# crate regardless of which features are on. sqlx names sqlx-mysql among its
+# deps, so `rsa` shows up in the lock -- but we build sqlx with the sqlite
+# driver only, and `cargo tree -i rsa` finds nothing, i.e. it is never
+# compiled into the app. RUSTSEC-2023-0071 has no patched release, so there is
+# nothing to bump to; ignore it here rather than leave a standing red result.
+# Re-check this if a MySQL/Postgres driver is ever enabled.
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]

@@ -10,7 +10,15 @@ onlyBuiltDependencies:
   - esbuild
 # Don't re-run `pnpm install` before every `pnpm <script>` invocation.
 verifyDepsBeforeRun: false
-# Force a patched transitive `cookie` (GHSA: <0.7.0 accepts out-of-bounds
-# characters in name/path/domain). SvelteKit still pins ^0.6.0.
+# Force patched transitive dependencies that the packages pulling them in
+# haven't bumped yet. All three stay inside the same major, so they're
+# drop-in; drop an entry once the parent ships the fix itself.
 overrides:
+  # GHSA: <0.7.0 accepts out-of-bounds characters in name/path/domain.
+  # SvelteKit still pins ^0.6.0.
   cookie: "^0.7.0"
+  # <5.9.3: quadratic blow-up on repeated strings, shared-memory serialisation,
+  # typed-array reviver bypass. Pulled in by @sveltejs/kit.
+  devalue: "^5.9.3"
+  # <1.2.2: event-loop DoS. Pulled in by vite/postcss.
+  source-map-js: "^1.2.2"
