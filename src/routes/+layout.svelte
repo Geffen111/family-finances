@@ -5,6 +5,10 @@
   import { invoke } from "@tauri-apps/api/core";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { onMount } from "svelte";
+  import type { Snippet } from "svelte";
+
+  // The routed page, passed as a snippet (Svelte 5) rather than a <slot>.
+  let { children }: { children?: Snippet } = $props();
 
   let householdName = $state("Our Home");
   $effect(() => {
@@ -184,7 +188,7 @@
   </nav>
 
   <main class="main-content">
-    <slot />
+    {@render children?.()}
   </main>
 </div>
 
