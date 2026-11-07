@@ -1,3 +1,4 @@
+use crate::services::openrouter::{self, Answer};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -5,21 +6,6 @@ pub struct CategorisationResult {
     pub category_path: String,
     pub confidence: f64,
     pub reasoning: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct OpenRouterResponse {
-    choices: Vec<Choice>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Choice {
-    message: Message,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Message {
-    content: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -31,24 +17,24 @@ struct ApiResponseItem {
 }
 
 pub struct AiCategorizer {
-    client: reqwest::Client,
     api_key: String,
 }
 
 impl AiCategorizer {
     pub fn new(api_key: String) -> Self {
-        Self {
-            client: crate::services::openrouter::client(),
-            api_key,
-        }
+        Self { api_key }
     }
 
+    /// Categorise one batch. The reply has to parse as a JSON array of items,
+    /// so a model that answers with prose (or truncates mid-array) counts as a
+    /// failure and the configured fallback model gets the batch instead — see
+    /// `openrouter::chat_parsed`.
     pub async fn categorise_batch(
         &self,
         transactions: &[TransactionInfo],
         category_paths: &[String],
         examples: &[(String, String)],
-    ) -> Result<Vec<CategorisationResult>, String> {
+    ) -> Result<Answer<Vec<CategorisationResult>>, String> {
         let categories_list = category_paths
             .iter()
             .map(|p| format!("- {}", p))
@@ -105,74 +91,33 @@ Transactions to categorise:
             categories_list, examples_block, transactions_json
         );
 
-        let body = serde_json::json!({
-            "model": "deepseek/deepseek-v4-flash",
-            "messages": [
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.1,
-            "max_tokens": 4096
-        });
+        let count = transactions.len();
+        openrouter::chat_parsed(&self.api_key, &prompt, 0.1, 4096, move |content| {
+            let items: Vec<ApiResponseItem> = serde_json::from_str(content).map_err(|e| {
+                format!("Failed to parse AI response items: {} - Content: {}", e, content)
+            })?;
 
-        let response = self
-            .client
-            .post("https://openrouter.ai/api/v1/chat/completions")
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(crate::services::openrouter::send_error)?;
+            let mut results: Vec<CategorisationResult> = (0..count)
+                .map(|_| CategorisationResult {
+                    category_path: "Unknown > Unknown".to_string(),
+                    confidence: 0.0,
+                    reasoning: "No suggestion".to_string(),
+                })
+                .collect();
 
-        let status = response.status();
-        let response_text = response
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read response: {}", e))?;
-
-        if !status.is_success() {
-            return Err(format!("OpenRouter API error ({}): {}", status, response_text));
-        }
-
-        let openrouter_resp: OpenRouterResponse = serde_json::from_str(&response_text)
-            .map_err(|e| format!("Failed to parse API response: {} - Response: {}", e, response_text))?;
-
-        let content = openrouter_resp
-            .choices
-            .first()
-            .map(|c| c.message.content.clone())
-            .ok_or_else(|| "No choices in API response".to_string())?;
-
-        let cleaned = content
-            .trim()
-            .trim_start_matches("```json")
-            .trim_start_matches("```")
-            .trim_end_matches("```")
-            .trim();
-
-        let items: Vec<ApiResponseItem> = serde_json::from_str(cleaned)
-            .map_err(|e| format!("Failed to parse AI response items: {} - Content: {}", e, cleaned))?;
-
-        let mut results: Vec<CategorisationResult> = transactions
-            .iter()
-            .map(|_| CategorisationResult {
-                category_path: "Unknown > Unknown".to_string(),
-                confidence: 0.0,
-                reasoning: "No suggestion".to_string(),
-            })
-            .collect();
-
-        for item in items {
-            if item.transaction_index < results.len() {
-                results[item.transaction_index] = CategorisationResult {
-                    category_path: item.category_path,
-                    confidence: item.confidence,
-                    reasoning: item.reasoning,
-                };
+            for item in items {
+                if item.transaction_index < results.len() {
+                    results[item.transaction_index] = CategorisationResult {
+                        category_path: item.category_path,
+                        confidence: item.confidence,
+                        reasoning: item.reasoning,
+                    };
+                }
             }
-        }
 
-        Ok(results)
+            Ok(results)
+        })
+        .await
     }
 }
 

@@ -127,23 +127,34 @@ Respond with JSON only, no markdown:
         retry_note = retry_note,
     );
 
-    let content = call_openrouter(api_key, &prompt).await?;
-    let cleaned = strip_code_fences(&content);
-
     #[derive(serde::Deserialize)]
     struct Plan {
         sql: String,
         #[serde(default)]
         explanation: String,
     }
-    let plan: Plan = serde_json::from_str(cleaned)
-        .map_err(|e| format!("Could not parse the model's query: {} - {}", e, cleaned))?;
 
-    let sql = sanitize_sql(&plan.sql)?;
-    Ok(QueryPlan {
-        sql,
-        explanation: plan.explanation,
-    })
+    // Parsing and SQL validation happen inside the call, so a model that
+    // answers with prose or an unsafe statement is treated as a failed attempt
+    // and the fallback model gets a go.
+    let answer = crate::services::openrouter::chat_parsed(
+        api_key,
+        &prompt,
+        0.1,
+        1024,
+        |cleaned| {
+            let plan: Plan = serde_json::from_str(cleaned).map_err(|e| {
+                format!("Could not parse the model's query: {} - {}", e, cleaned)
+            })?;
+            Ok(QueryPlan {
+                sql: sanitize_sql(&plan.sql)?,
+                explanation: plan.explanation,
+            })
+        },
+    )
+    .await?;
+
+    Ok(answer.value)
 }
 
 /// Validates that `sql` is a single read-only statement and returns it trimmed.
@@ -250,64 +261,8 @@ Answer in 1-3 sentences. Do not mention SQL."#,
         table = table,
     );
 
-    call_openrouter(api_key, &prompt).await
-}
-
-fn strip_code_fences(content: &str) -> &str {
-    content
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim()
-}
-
-async fn call_openrouter(api_key: &str, prompt: &str) -> Result<String, String> {
-    let client = crate::services::openrouter::client();
-    let body = serde_json::json!({
-        "model": "deepseek/deepseek-v4-flash",
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.1,
-        "max_tokens": 1024
-    });
-
-    let response = client
-        .post("https://openrouter.ai/api/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
+    crate::services::openrouter::chat_text(api_key, &prompt, 0.1, 1024)
         .await
-        .map_err(crate::services::openrouter::send_error)?;
-
-    let status = response.status();
-    let text = response
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read response: {}", e))?;
-
-    if !status.is_success() {
-        return Err(format!("OpenRouter API error ({}): {}", status, text));
-    }
-
-    #[derive(serde::Deserialize)]
-    struct Resp {
-        choices: Vec<Choice>,
-    }
-    #[derive(serde::Deserialize)]
-    struct Choice {
-        message: Msg,
-    }
-    #[derive(serde::Deserialize)]
-    struct Msg {
-        content: String,
-    }
-
-    let parsed: Resp = serde_json::from_str(&text)
-        .map_err(|e| format!("Failed to parse API response: {} - {}", e, text))?;
-    parsed
-        .choices
-        .first()
-        .map(|c| c.message.content.clone())
-        .ok_or_else(|| "No choices in API response".to_string())
+        .map(|a| a.value)
 }
+

@@ -31,6 +31,13 @@ pub struct CategorisationRun {
     pub llm_batches: usize,
     pub elapsed_ms: u64,
     pub llm_elapsed_ms: u64,
+    /// The model the run was configured to use (Settings > AI Model).
+    pub model: String,
+    /// Set when the primary model failed on at least one batch and the
+    /// fallback model answered instead - worth surfacing, since the run
+    /// succeeded but not with the model the user picked.
+    pub fallback_model: Option<String>,
+    pub fallback_batches: usize,
 }
 
 fn find_category_id(categories: &[CategoryWithPath], path: &str) -> Option<i64> {
@@ -244,6 +251,9 @@ pub async fn categorise_transactions(
             llm_batches: 0,
             elapsed_ms: started.elapsed().as_millis() as u64,
             llm_elapsed_ms: 0,
+            model: crate::services::openrouter::model(),
+            fallback_model: None,
+            fallback_batches: 0,
         });
     }
 
@@ -302,6 +312,8 @@ pub async fn categorise_transactions(
     let llm_categorised = llm_txs.len();
     let mut llm_batches = 0usize;
     let mut llm_elapsed_ms = 0u64;
+    let mut fallback_batches = 0usize;
+    let mut fallback_model: Option<String> = None;
 
     if !llm_txs.is_empty() {
         let llm_started = std::time::Instant::now();
@@ -330,7 +342,10 @@ pub async fn categorise_transactions(
 
         let chunks: Vec<&[&crate::models::Transaction]> = llm_txs.chunks(BATCH_SIZE).collect();
         llm_batches = chunks.len();
-        let mut batch_results: Vec<Option<Vec<crate::services::categorizer::CategorisationResult>>> =
+        type BatchAnswer = crate::services::openrouter::Answer<
+            Vec<crate::services::categorizer::CategorisationResult>,
+        >;
+        let mut batch_results: Vec<Option<BatchAnswer>> =
             (0..chunks.len()).map(|_| None).collect();
 
         // Each chunk carries its own index into `batch_results`, so a result
@@ -366,10 +381,14 @@ pub async fn categorise_transactions(
 
         // Back in batch order, so each result lines up with its transaction.
         for (ci, chunk) in chunks.iter().enumerate() {
-            let Some(results) = batch_results[ci].take() else {
+            let Some(answer) = batch_results[ci].take() else {
                 continue;
             };
-            for (j, result) in results.iter().enumerate() {
+            if answer.fallback_used {
+                fallback_batches += 1;
+                fallback_model = Some(answer.model.clone());
+            }
+            for (j, result) in answer.value.iter().enumerate() {
                 let Some(tx) = chunk.get(j) else { continue };
                 let category_id = find_category_id(&category_with_paths, &result.category_path);
                 let confidence = result.confidence.clamp(0.0, 1.0);
@@ -398,6 +417,9 @@ pub async fn categorise_transactions(
         llm_batches,
         elapsed_ms: started.elapsed().as_millis() as u64,
         llm_elapsed_ms,
+        model: crate::services::openrouter::model(),
+        fallback_model,
+        fallback_batches,
     })
 }
 

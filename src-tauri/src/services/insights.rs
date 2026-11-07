@@ -3,21 +3,6 @@ use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct OpenRouterResponse {
-    choices: Vec<Choice>,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct Choice {
-    message: Message,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct Message {
-    content: String,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct CachedInsight {
     insight_data: String,
     generated_at: String,
@@ -405,55 +390,22 @@ Respond with JSON only:
         net = net,
     );
 
-    let client = crate::services::openrouter::client();
+    // The reply has to parse as the insights JSON, so a model that answers
+    // with prose hands the request to the fallback model instead of failing.
+    let answer = crate::services::openrouter::chat_parsed(
+        api_key,
+        &prompt,
+        0.3,
+        4096,
+        |cleaned| {
+            serde_json::from_str::<SpendingInsights>(cleaned).map_err(|e| {
+                format!("Failed to parse AI response: {} - Content: {}", e, cleaned)
+            })
+        },
+    )
+    .await?;
 
-    let body = serde_json::json!({
-        "model": "deepseek/deepseek-v4-flash",
-        "messages": [
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.3,
-        "max_tokens": 4096
-    });
-
-    let response = client
-        .post("https://openrouter.ai/api/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(crate::services::openrouter::send_error)?;
-
-    let status = response.status();
-    let response_text = response
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read response: {}", e))?;
-
-    if !status.is_success() {
-        return Err(format!("OpenRouter API error ({}): {}", status, response_text));
-    }
-
-    let openrouter_resp: OpenRouterResponse = serde_json::from_str(&response_text)
-        .map_err(|e| format!("Failed to parse API response: {} - Response: {}", e, response_text))?;
-
-    let content = openrouter_resp
-        .choices
-        .first()
-        .map(|c| c.message.content.clone())
-        .ok_or_else(|| "No choices in API response".to_string())?;
-
-    let cleaned = content
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
-
-    let mut insights: SpendingInsights =
-        serde_json::from_str(cleaned).map_err(|e| format!("Failed to parse AI response: {} - Content: {}", e, cleaned))?;
-
+    let mut insights = answer.value;
     insights.period_label = period_label.to_string();
     insights.generated_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 

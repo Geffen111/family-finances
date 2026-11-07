@@ -57,6 +57,9 @@
     llm_batches: number;
     elapsed_ms: number;
     llm_elapsed_ms: number;
+    model: string;
+    fallback_model: string | null;
+    fallback_batches: number;
   }
 
   interface Tag {
