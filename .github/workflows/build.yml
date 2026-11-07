@@ -7,6 +7,10 @@ on:
       - "**.md"
       - LICENSE
       - .gitignore
+      # The audit workflow is reporting only; editing it shouldn't cut a
+      # release. (build.yml itself is NOT ignored -- a change here should be
+      # exercised by a real build.)
+      - .github/workflows/audit.yml
   workflow_dispatch:
 
 jobs:

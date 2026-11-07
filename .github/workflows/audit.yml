@@ -1,0 +1,84 @@
+name: Dependency audit
+
+# Deliberately separate from build.yml. Advisories get published against
+# dependencies we haven't touched, and folding this into the build would mean
+# someone else's disclosure stops the installer from being released. This
+# workflow reports; build.yml ships.
+on:
+  schedule:
+    # Sunday 21:00 UTC = Monday morning in Australia, so a new advisory is
+    # waiting at the start of the week rather than found by accident on a push.
+    - cron: "0 21 * * 0"
+  push:
+    branches: [main]
+    # Only when something that decides the dependency tree changes -- or when
+    # this workflow itself does, so a change here is exercised immediately.
+    paths:
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - src-tauri/Cargo.toml
+      - src-tauri/Cargo.lock
+      - src-tauri/.cargo/audit.toml
+      - .github/workflows/audit.yml
+  workflow_dispatch:
+
+# Two jobs rather than two steps: a failure on one side shouldn't hide the
+# state of the other.
+jobs:
+  npm:
+    name: npm advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      # Pinned for the same reason build.yml pins it: an unpinned install
+      # floated to a new major and changed behaviour under us.
+      - name: Install pnpm
+        run: npm install -g pnpm@12
+
+      # `pnpm audit` reads pnpm-lock.yaml and queries the registry, so no
+      # `pnpm install` is needed -- which also keeps the esbuild build-script
+      # gate (see pnpm-workspace.yaml) out of this workflow entirely.
+      - name: Report every advisory
+        run: pnpm audit || true
+
+      # The gate. Known-unfixable lows (see the "Patch vulnerable
+      # dependencies" commit) shouldn't page anyone every week, but a new
+      # high or critical should fail loudly.
+      - name: Fail on high or critical
+        run: pnpm audit --audit-level high
+
+  cargo:
+    name: Rust advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          # The action defaults to -D warnings, which has nothing to do with
+          # auditing but would fail the cargo-audit build on any warning.
+          rustflags: ""
+
+      # Built from source rather than pulled from a third-party installer
+      # action. It takes a couple of minutes, and this workflow runs weekly
+      # plus on manifest changes, so that is cheap enough to be worth not
+      # adding another action to trust.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      # Reads src-tauri/Cargo.lock, and picks up the ignore in
+      # src-tauri/.cargo/audit.toml (rsa: in the lock via sqlx's optional
+      # MySQL driver, never compiled, no patched release). Exits non-zero on
+      # a vulnerability; unmaintained/unsound/yanked notices stay warnings.
+      - name: Audit Cargo.lock
+        working-directory: src-tauri
+        run: cargo audit
