@@ -176,6 +176,11 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   second list: it returns `category_id` and a computed `next_due_date` so one click adds a
   candidate as a tracked expense, and `already_tracked` (merchant key via `normalize_desc`)
   keeps what you've added out of the offer.
+  Adding refuses a row that matches a live one on name, amount, cadence, kind *and*
+  date (`refuse_duplicate`) — five fields agreeing is one thing added twice, not two
+  things. Exact rather than by merchant key on purpose: two loans both called "Loan
+  Repayment" share a key but differ in amount and date. The scan dialog reports that
+  refusal as "already in your list" and marks the row Added, since it is.
 - **`cashflow::expand_bills(pool, from, to)`** is the one place a recurring cost becomes
   dated occurrences: it rolls a stale `next_due_date` forward into the window, stops at
   `end_date`, and treats a `One-off` as exactly one occurrence that is *never* rolled

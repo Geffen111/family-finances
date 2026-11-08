@@ -268,13 +268,27 @@
         active: true,
         notes: `Detected from ${d.occurrences} transactions`,
       });
-      const next = new Set(addedKeys);
-      next.add(detectedKey(d));
-      addedKeys = next;
+      markAdded(d);
       await load();
     } catch (e) {
-      showToast(String(e), "error");
+      const msg = String(e);
+      // The backend refuses a row identical to one already tracked. In here
+      // that isn't a failure — what you wanted tracked is tracked — so mark
+      // the row and say so, rather than flashing a red error at you.
+      if (msg.includes("already in the list")) {
+        markAdded(d);
+        showToast(`"${d.description}" is already in your list.`);
+        await load();
+        return;
+      }
+      showToast(msg, "error");
     }
+  }
+
+  function markAdded(d: DetectedItem) {
+    const next = new Set(addedKeys);
+    next.add(detectedKey(d));
+    addedKeys = next;
   }
 
   // A merchant can appear on both sides (paid and refunded), so the key that

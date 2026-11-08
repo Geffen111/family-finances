@@ -312,6 +312,48 @@ pub async fn list_recurring_costs(pool: State<'_, SqlitePool>) -> Result<Vec<Rec
     Ok(rows.into_iter().map(row_to_cost).collect())
 }
 
+/// Refuse a row that matches a live one on every field that identifies it:
+/// name, amount, cadence, side and date. Two rows that agree on all five are
+/// never two real things — they are one thing added twice, which is what a
+/// double click, or an "Add" that errored after it had in fact written the
+/// row, leaves behind.
+///
+/// Deliberately an *exact* match rather than a merchant-key one: two loans
+/// both called "Loan Repayment" normalise to the same key but differ in
+/// amount and date, and refusing the second would be wrong.
+async fn refuse_duplicate(
+    pool: &SqlitePool,
+    name: &str,
+    amount: f64,
+    frequency: &str,
+    kind: &str,
+    next_due_date: &Option<String>,
+) -> Result<(), String> {
+    let clash = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM recurring_costs \
+         WHERE active = 1 AND name = ? COLLATE NOCASE AND kind = ? AND frequency = ? \
+           AND ABS(amount - ?) < 0.005 \
+           AND IFNULL(next_due_date, '') = IFNULL(?, '')",
+    )
+    .bind(name)
+    .bind(kind)
+    .bind(frequency)
+    .bind(amount)
+    .bind(next_due_date)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("DB query error: {}", e))?;
+
+    if clash > 0 {
+        return Err(format!(
+            "\"{}\" is already in the list at the same amount, cadence and date. \
+             Edit that one, or change something here if this really is a second item.",
+            name
+        ));
+    }
+    Ok(())
+}
+
 /// Insert a recurring cost and read it back. Plain pool, like
 /// `cashflow::expand_bills`, so it is testable without a Tauri `State`.
 pub(crate) async fn insert_recurring_cost(
@@ -330,6 +372,7 @@ pub(crate) async fn insert_recurring_cost(
     let kind = kind.unwrap_or_else(|| KIND_EXPENSE.to_string());
     validate_kind(&kind)?;
     validate_dates(frequency, &next_due_date, &end_date)?;
+    refuse_duplicate(pool, name, amount, frequency, &kind, &next_due_date).await?;
     // The id comes back from the INSERT itself. A follow-up
     // `SELECT last_insert_rowid()` is not safe here: the pool holds four
     // connections and hands out whichever is free, so that second statement
@@ -469,6 +512,62 @@ mod tests {
             .unwrap();
         sqlx::migrate!("./migrations").run(&pool).await.unwrap();
         pool
+    }
+
+    async fn add(pool: &SqlitePool, name: &str, amount: f64, due: &str) -> Result<RecurringCost, String> {
+        insert_recurring_cost(
+            pool,
+            name,
+            amount,
+            "Monthly",
+            Some(KIND_EXPENSE.to_string()),
+            None,
+            Some(due.to_string()),
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// One thing added twice is the mistake this guards: an exact match on
+    /// name, amount, cadence, side and date is refused rather than written.
+    #[tokio::test]
+    async fn an_identical_cost_is_refused_rather_than_added_twice() {
+        let pool = multi_connection_pool("duplicate_guard_test").await;
+
+        add(&pool, "Car Insurance", 92.40, "2027-02-01").await.unwrap();
+        let err = add(&pool, "car insurance", 92.40, "2027-02-01")
+            .await
+            .expect_err("the second identical add should be refused");
+        assert!(err.contains("already in the list"), "unhelpful message: {err}");
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM recurring_costs")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "the refused add must not have written a row");
+    }
+
+    /// Two real items that share a name are not duplicates — two loans both
+    /// read "Loan Repayment" on the statement. Only the full match is refused.
+    #[tokio::test]
+    async fn a_different_amount_or_date_is_still_allowed() {
+        let pool = multi_connection_pool("duplicate_allowed_test").await;
+
+        add(&pool, "Loan Repayment", 900.00, "2027-02-01").await.unwrap();
+        add(&pool, "Loan Repayment", 420.00, "2027-02-01")
+            .await
+            .expect("a different amount is a different item");
+        add(&pool, "Loan Repayment", 900.00, "2027-02-15")
+            .await
+            .expect("a different date is a different item");
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM recurring_costs")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 3);
     }
 
     /// Adding a cost has to return the row that was just written, whichever
