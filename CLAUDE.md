@@ -22,8 +22,9 @@ PATH="$USERPROFILE/.cargo/bin:$PATH" RUSTFLAGS="" cargo check   # run in src-tau
 PATH="/c/Program Files/nodejs:$APPDATA/npm:$PATH" pnpm check    # want 0 errors / 0 warnings
 pnpm build                                                       # vite build, what CI runs
 ```
-Backend tests: `cargo test --lib` in `src-tauri/` (in-memory SQLite; currently the forecast
-base-period maths). CI doesn't run them, so run them when touching that code.
+Backend tests: `cargo test --lib` in `src-tauri/` (in-memory SQLite, real migrations):
+the forecast base-period maths and cash projection, `liquid_assets`, and the category
+rename modes. CI doesn't run them, so run them when touching that code.
 `pnpm check` (svelte-check) does NOT gate the build, but keep it at 0/0. `link.exe` is
 present locally, so `cargo check` works.
 
@@ -36,6 +37,13 @@ normal PCs, `*_arm64_*` for Windows-on-ARM. Note: the workflow runs on *any* pus
 
 The app's in-app "update available" banner (sidebar) compares the commit Vite stamps in
 (`__APP_COMMIT__`, see `vite.config.js`) against `build-info.json`; needs the repo public.
+
+A second workflow, `.github/workflows/audit.yml`, audits npm + Cargo advisories weekly
+(and on any manifest/lockfile change). It is deliberately separate: an advisory published
+against an untouched dependency shouldn't stop an installer being released. npm gates on
+`--audit-level high`; `cargo audit` reads `src-tauri/.cargo/audit.toml`, which ignores
+RUSTSEC-2023-0071 (`rsa` is in Cargo.lock via sqlx's optional MySQL driver and never
+compiled — `cargo tree -i rsa` is empty).
 
 CI quirks that are load-bearing — don't "simplify" these away:
 - **esbuild's build script must stay approved** via `allowBuilds: { esbuild: true }` in
@@ -106,6 +114,39 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   non-category aggregation still read the base `transactions` table (splits sum to the
   debit, so totals are identical). Splits are debit-only and validated to sum to the
   transaction's debit.
+- **Per-page view state** lives in `src/lib/viewState.ts` (`loadView`/`saveView`/
+  `clearView`, localStorage, one key per page). A page declares its defaults once,
+  initialises each `$state` from the result, and writes back in a single `$effect` that
+  reads them all. Only *view* state belongs there — filters, presets, sort, chart
+  selections, expanded rows — never loaded data (the DB is the truth) and never modal
+  open flags or spinners, which would restore the app mid-dialog. It's localStorage and
+  not the DB on purpose: the DB syncs via OneDrive, and a filter left on one machine
+  shouldn't follow you to another. JSON can't carry a `Set`, so Sets are enveloped as
+  `{__set: [...]}` and rebuilt on load. Pages wired up: dashboard, transactions,
+  forecasting, ask. When restoring a reference to a row (account, scenario), check it
+  still exists and fall back — and give a filter the user can't see a way back
+  (transactions has "Clear filters").
+- **Cash & accounts** is one figure with one definition:
+  `commands::cashflow::liquid_assets` (latest known balance per *asset* account, plus
+  the date it's current as at). The dashboard's net-worth band, "safe to spend" and the
+  forecast's cash projection all read it — don't re-derive it inline.
+- **Forecast cash projection:** `ForecastMonth.projected_cash` is the opening balance
+  plus a running sum of each month's net; `ForecastResult` carries `opening_cash` /
+  `cash_as_at`. `compare_scenarios` resolves the opening balance **once** so the
+  baseline and every scenario start from the same point. It gets its own chart on the
+  forecasting page (a balance in the tens of thousands on the same axis as a monthly net
+  in the low thousands flattens the net lines), and that chart must not clamp its y-axis
+  at zero when a line goes negative — the month the money runs out is the point of it.
+- **Renaming a category** takes a `rename_mode`: `update_history` (default — rename in
+  place, so every past transaction reads as the new name, since transactions reference
+  the category by id) or `keep_history` (leave the category and its transactions
+  untouched and create a new category under the new name, which is what the command
+  returns — so any follow-up flag calls must target *that* id). The logic is in
+  `apply_category_edit` over a plain pool; the command is a thin wrapper, which is what
+  makes it testable. Renaming in place also rewrites `transactions.ai_category`, which
+  stores the AI's path as **text** and would otherwise quote a name that no longer
+  exists — only where it still matches the old path, so hand-recategorised rows keep
+  their history.
 - **Forecast base period:** category averages divide by `base_period_months`
   (`services/forecast.rs`) — the period clamped to the imported data's date range, in days
   ÷ 30.44. Don't go back to counting whole months: `end_month − start_month` made
