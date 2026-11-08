@@ -28,6 +28,7 @@ pub fn run() {
             commands::categories::delete_category,
             commands::categories::assign_category,
             commands::categories::assign_categories_bulk,
+            commands::categories::count_category_transactions,
             commands::categories::set_category_exclusion,
             commands::categories::set_category_rollover,
             commands::categories::get_uncategorised_transactions,

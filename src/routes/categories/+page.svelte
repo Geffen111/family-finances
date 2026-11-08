@@ -59,6 +59,13 @@
 
   let editId = $state<number>(0);
   let editName = $state("");
+  // The name the modal opened with, so a rename can be told from any other
+  // edit, plus how many transactions are already filed here -- the choice
+  // below only appears, and only matters, when the name actually changes.
+  let editOriginalName = $state("");
+  let editTxCount = $state<number | null>(null);
+  type RenameMode = "update_history" | "keep_history";
+  let renameMode = $state<RenameMode>("update_history");
   let editParentId = $state<number | null>(null);
   let editBudget = $state<string>("");
   let editExclude = $state(false);
@@ -280,6 +287,12 @@
   function openEditModal(cat: Category) {
     editId = cat.id;
     editName = cat.name;
+    editOriginalName = cat.name;
+    renameMode = "update_history";
+    editTxCount = null;
+    invoke<number>("count_category_transactions", { id: cat.id })
+      .then((n) => (editTxCount = n))
+      .catch(() => (editTxCount = null));
     editParentId = cat.parent_id;
     editBudget = cat.monthly_budget != null ? String(cat.monthly_budget) : "";
     editExclude = cat.exclude_from_budget;
@@ -289,16 +302,26 @@
 
   async function handleEdit() {
     if (!editName.trim()) return;
+    const isRename = editName.trim() !== editOriginalName;
+    const branching = isRename && renameMode === "keep_history";
     try {
-      await invoke("update_category", {
+      // Branching off returns the *new* category, so the flags below have to
+      // follow it rather than stay on the old one.
+      const saved = await invoke<Category>("update_category", {
         id: editId,
         name: editName.trim() || null,
         parentId: editParentId,
         monthlyBudget: editBudget ? parseFloat(editBudget) : null,
+        renameMode,
       });
-      await invoke("set_category_exclusion", { id: editId, exclude: editExclude });
-      await invoke("set_category_rollover", { id: editId, rollover: editRollover });
-      showToast("Category updated.", "success");
+      await invoke("set_category_exclusion", { id: saved.id, exclude: editExclude });
+      await invoke("set_category_rollover", { id: saved.id, rollover: editRollover });
+      showToast(
+        branching
+          ? `Added "${saved.name}". ${editOriginalName} keeps its transactions.`
+          : "Category updated.",
+        "success",
+      );
       showEditModal = false;
       await loadCategories();
     } catch (e) {
@@ -523,6 +546,38 @@
         Name
         <input type="text" bind:value={editName} placeholder="Category name" />
       </label>
+      {#if editName.trim() && editName.trim() !== editOriginalName}
+        <div class="rename-choice">
+          <p class="rename-head">
+            Renaming &ldquo;{editOriginalName}&rdquo;
+            {#if editTxCount !== null}
+              &mdash; {editTxCount} {editTxCount === 1 ? "transaction is" : "transactions are"}
+              filed under it
+            {/if}
+          </p>
+          <label class="radio-label">
+            <input type="radio" value="update_history" bind:group={renameMode} />
+            <span>
+              <strong>Update past transactions too</strong>
+              <small>
+                Everything already in this category shows as
+                &ldquo;{editName.trim()}&rdquo;, including in past months and reports.
+              </small>
+            </span>
+          </label>
+          <label class="radio-label">
+            <input type="radio" value="keep_history" bind:group={renameMode} />
+            <span>
+              <strong>Keep history as it is, add a new category</strong>
+              <small>
+                &ldquo;{editOriginalName}&rdquo; keeps its name and its
+                transactions; &ldquo;{editName.trim()}&rdquo; is created
+                alongside it for future ones.
+              </small>
+            </span>
+          </label>
+        </div>
+      {/if}
       <label>
         Parent
         <select bind:value={editParentId}>
@@ -834,5 +889,41 @@
     padding: 0.05rem 0.35rem;
     margin-left: 0.4rem;
     vertical-align: middle;
+  }
+
+  .rename-choice {
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 0.75rem;
+    margin-bottom: 0.75rem;
+    background: var(--bg-secondary);
+  }
+  .rename-head {
+    margin: 0 0 0.5rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+  }
+  .radio-label {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.3rem 0;
+    cursor: pointer;
+  }
+  .radio-label input {
+    margin-top: 0.2rem;
+    flex-shrink: 0;
+  }
+  .radio-label strong {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .radio-label small {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    line-height: 1.35;
   }
 </style>
