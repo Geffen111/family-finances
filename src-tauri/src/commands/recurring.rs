@@ -312,6 +312,73 @@ pub async fn list_recurring_costs(pool: State<'_, SqlitePool>) -> Result<Vec<Rec
     Ok(rows.into_iter().map(row_to_cost).collect())
 }
 
+/// Tracked items that look like one thing entered more than once.
+#[derive(Debug, Serialize)]
+pub struct DuplicateGroup {
+    /// The first copy's name, for the heading — the others normalise to the
+    /// same merchant key but may be worded differently.
+    pub name: String,
+    pub kind: String,
+    pub frequency: String,
+    pub amount: f64,
+    pub items: Vec<RecurringCost>,
+}
+
+/// Group the live items that look like the same thing: same merchant key,
+/// same side, same cadence, same amount. Dates are allowed to differ, which
+/// is the point — the pair this mostly finds was added twice and only one
+/// copy has since rolled forward to its next date.
+///
+/// Looser than `refuse_duplicate`, which has to be exact because it blocks a
+/// save; this only reports, and the user says which copy to keep. Still
+/// tighter than the merchant key alone: two loans both reading "Loan
+/// Repayment" are separate until they also agree on what they cost.
+pub(crate) async fn duplicate_groups(pool: &SqlitePool) -> Result<Vec<DuplicateGroup>, String> {
+    let rows = sqlx::query_as::<_, RecurringRow>(&format!(
+        "{SELECT_RECURRING} WHERE r.active = 1 ORDER BY r.id"
+    ))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("DB query error: {}", e))?;
+
+    // Insertion-ordered, so the list reads in the order things were added
+    // rather than in whatever order a hash map happens to hold them.
+    let mut keys: Vec<String> = Vec::new();
+    let mut groups: Vec<DuplicateGroup> = Vec::new();
+
+    for cost in rows.into_iter().map(row_to_cost) {
+        let key = format!(
+            "{}|{}|{}|{:.2}",
+            normalize_desc(&cost.name),
+            cost.kind,
+            cost.frequency,
+            cost.amount
+        );
+        match keys.iter().position(|k| *k == key) {
+            Some(i) => groups[i].items.push(cost),
+            None => {
+                keys.push(key);
+                groups.push(DuplicateGroup {
+                    name: cost.name.clone(),
+                    kind: cost.kind.clone(),
+                    frequency: cost.frequency.clone(),
+                    amount: cost.amount,
+                    items: vec![cost],
+                });
+            }
+        }
+    }
+
+    Ok(groups.into_iter().filter(|g| g.items.len() > 1).collect())
+}
+
+#[tauri::command]
+pub async fn find_duplicate_costs(
+    pool: State<'_, SqlitePool>,
+) -> Result<Vec<DuplicateGroup>, String> {
+    duplicate_groups(&pool).await
+}
+
 /// Refuse a row that matches a live one on every field that identifies it:
 /// name, amount, cadence, side and date. Two rows that agree on all five are
 /// never two real things — they are one thing added twice, which is what a
@@ -568,6 +635,61 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 3);
+    }
+
+    /// The pair the rowid bug left behind: same thing, added twice, and only
+    /// one copy rolled forward to its next date. Different dates must not
+    /// hide it, or the review would miss exactly what it is there for.
+    #[tokio::test]
+    async fn two_copies_of_one_thing_are_grouped_even_on_different_dates() {
+        let pool = multi_connection_pool("duplicate_find_test").await;
+
+        add(&pool, "Northfield Care Wages", 1450.00, "2027-01-06").await.unwrap();
+        add(&pool, "Northfield Care Wages 0092", 1450.00, "2027-01-20").await.unwrap();
+
+        let groups = duplicate_groups(&pool).await.unwrap();
+        assert_eq!(groups.len(), 1, "expected one group, got {groups:#?}");
+        assert_eq!(groups[0].items.len(), 2);
+        assert_eq!(groups[0].amount, 1450.00);
+    }
+
+    /// Nothing to report is the normal case, and two items that merely share
+    /// a merchant key are not a duplicate — the amount has to agree too.
+    #[tokio::test]
+    async fn items_that_only_share_a_name_are_not_reported() {
+        let pool = multi_connection_pool("duplicate_find_clean_test").await;
+
+        add(&pool, "Loan Repayment A.100", 900.00, "2027-02-01").await.unwrap();
+        add(&pool, "Loan Repayment B.200", 420.00, "2027-02-01").await.unwrap();
+        add(&pool, "Car Insurance", 92.40, "2027-02-01").await.unwrap();
+
+        let groups = duplicate_groups(&pool).await.unwrap();
+        assert!(groups.is_empty(), "nothing should be flagged, got {groups:#?}");
+    }
+
+    /// A pay and a refund from the same merchant at the same amount are two
+    /// sides of the ledger, not one row twice.
+    #[tokio::test]
+    async fn the_two_sides_of_a_merchant_are_not_a_duplicate() {
+        let pool = multi_connection_pool("duplicate_find_sides_test").await;
+
+        add(&pool, "Acme Pty Ltd", 120.00, "2027-03-01").await.unwrap();
+        insert_recurring_cost(
+            &pool,
+            "Acme Pty Ltd",
+            120.00,
+            "Monthly",
+            Some(KIND_INCOME.to_string()),
+            None,
+            Some("2027-03-01".to_string()),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(duplicate_groups(&pool).await.unwrap().is_empty());
     }
 
     /// Adding a cost has to return the row that was just written, whichever

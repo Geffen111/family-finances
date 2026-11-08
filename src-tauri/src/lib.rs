@@ -57,6 +57,7 @@ pub fn run() {
             commands::recurring::create_recurring_cost,
             commands::recurring::update_recurring_cost,
             commands::recurring::delete_recurring_cost,
+            commands::recurring::find_duplicate_costs,
             commands::goals::list_savings_goals,
             commands::goals::create_savings_goal,
             commands::goals::update_savings_goal,

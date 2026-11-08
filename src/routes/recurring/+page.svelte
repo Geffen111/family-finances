@@ -35,6 +35,17 @@
     already_tracked: boolean;
   }
 
+  // Items that look like one thing tracked more than once. The backend
+  // decides what "look like" means (same merchant key, side, cadence and
+  // amount); this page only shows them and lets you delete the spare.
+  interface DuplicateGroup {
+    name: string;
+    kind: string;
+    frequency: string;
+    amount: number;
+    items: RecurringCost[];
+  }
+
   interface Category {
     id: number;
     path: string;
@@ -62,6 +73,8 @@
   let costs = $state<RecurringCost[]>([]);
   let categories = $state<Category[]>([]);
   let loading = $state(true);
+  let duplicates = $state<DuplicateGroup[]>([]);
+  let showDuplicates = $state(false);
 
   let showModal = $state(false);
   let editId = $state<number | null>(null);
@@ -99,6 +112,12 @@
     d.setFullYear(d.getFullYear() + 1);
     return d.toLocaleDateString("en-CA");
   }
+
+  // How many rows you could remove, not how many groups there are: "2 items
+  // look like duplicates" is the number you act on.
+  let duplicateExtras = $derived(
+    duplicates.reduce((n, g) => n + g.items.length - 1, 0),
+  );
 
   let isOneOff = $derived(formFrequency === ONE_OFF);
   let isIncomeForm = $derived(formKind === INCOME);
@@ -153,12 +172,14 @@
   async function load() {
     loading = true;
     try {
-      const [c, cats] = await Promise.all([
+      const [c, cats, dupes] = await Promise.all([
         invoke<RecurringCost[]>("list_recurring_costs"),
         invoke<Category[]>("get_categories"),
+        invoke<DuplicateGroup[]>("find_duplicate_costs"),
       ]);
       costs = c;
       categories = cats;
+      duplicates = dupes;
     } catch (e) {
       showToast(String(e), "error");
     } finally {
@@ -233,6 +254,9 @@
       await invoke("delete_recurring_cost", { id: deleteId });
       showDeleteConfirm = false;
       await load();
+      // Deleting the last spare empties the review, so close it rather than
+      // leaving an empty dialog in the way.
+      if (duplicates.length === 0) showDuplicates = false;
       showToast(`Deleted "${deleteName}".`, "success");
     } catch (e) {
       showToast(String(e), "error");
@@ -300,7 +324,7 @@
   let scanCandidates = $derived(detected.filter((d) => !d.already_tracked));
 </script>
 
-<svelte:window onkeydown={(e) => { if (e.key !== "Escape") return; showModal = false; showDeleteConfirm = false; showScan = false; }} />
+<svelte:window onkeydown={(e) => { if (e.key !== "Escape") return; showModal = false; showDeleteConfirm = false; showScan = false; showDuplicates = false; }} />
 
 <div class="page">
   <div class="header">
@@ -319,6 +343,17 @@
       <button class="btn btn-primary" onclick={openAdd}>Add</button>
     </div>
   </div>
+
+  {#if !loading && duplicateExtras > 0}
+    <div class="dup-note">
+      <span>
+        {duplicateExtras}
+        {duplicateExtras === 1 ? "item looks like a duplicate" : "items look like duplicates"}
+        of something already in the list.
+      </span>
+      <button class="btn btn-sm" onclick={() => { showDuplicates = true; }}>Review</button>
+    </div>
+  {/if}
 
   {#if loading}
     <p class="loading">Loading…</p>
@@ -467,6 +502,47 @@
   </div>
 {/if}
 
+{#if showDuplicates}
+  <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) showDuplicates = false; }}>
+    <div class="modal modal-lg" role="dialog" aria-modal="true" tabindex="-1">
+      <h2>Possible duplicates</h2>
+      <p class="modal-intro">
+        These agree on merchant, amount and cadence, so they are probably one thing
+        tracked twice — every copy is counted, so a spare quietly inflates your totals
+        and your forecast. Check the dates and notes before deleting: two real items
+        can look alike.
+      </p>
+      <div class="scan-list">
+        {#each duplicates as g (g.name + g.amount + g.frequency + g.kind)}
+          <div class="dup-group">
+            <div class="dup-head">
+              {g.name}
+              {#if g.kind === INCOME}<span class="scan-in">income</span>{/if}
+              <span class="dup-head-meta">{fmt(g.amount)} · {g.frequency} · {g.items.length} copies</span>
+            </div>
+            {#each g.items as c (c.id)}
+              <div class="scan-row">
+                <div class="scan-main">
+                  <span class="scan-name">{c.name}</span>
+                  <span class="scan-meta">
+                    {c.next_due_date ? `next ${formatDate(c.next_due_date)}` : "no date"} ·
+                    {c.category_name ?? "No category"}
+                    {#if c.notes}· {c.notes}{/if}
+                  </span>
+                </div>
+                <button class="btn btn-sm btn-danger" onclick={() => openDelete(c)}>Delete</button>
+              </div>
+            {/each}
+          </div>
+        {/each}
+      </div>
+      <div class="modal-actions">
+        <button class="btn" onclick={() => { showDuplicates = false; }}>Done</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 {#if showDeleteConfirm}
   <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) showDeleteConfirm = false; }}>
     <div class="modal modal-sm" role="dialog" aria-modal="true" tabindex="-1">
@@ -521,6 +597,15 @@
   .scan-name { display: block; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .scan-meta { display: block; font-size: 0.74rem; color: var(--text-secondary); margin-top: 0.15rem; font-variant-numeric: tabular-nums; }
   .scan-added { font-size: 0.76rem; color: var(--text-muted); flex-shrink: 0; }
+
+  .dup-note { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap;
+    margin-bottom: 1rem; padding: 0.6rem 0.85rem; border: 1px solid var(--border-color);
+    border-radius: 10px; background: var(--bg-secondary); font-size: 0.82rem; color: var(--text-secondary); }
+  .dup-group { display: flex; flex-direction: column; gap: 0.4rem; }
+  .dup-group + .dup-group { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border-color); }
+  .dup-head { font-size: 0.82rem; font-weight: 600; color: var(--text-primary); }
+  .dup-head-meta { font-weight: 400; color: var(--text-secondary); margin-left: 0.4rem; font-variant-numeric: tabular-nums; }
+  .modal-intro { font-size: 0.8rem; color: var(--text-secondary); line-height: 1.45; margin: 0 0 0.9rem; }
 
   .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
   .modal { background: var(--bg-card); border-radius: var(--radius-card); padding: 1.5rem; width: 420px; max-width: 90vw; max-height: 90vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.15); }

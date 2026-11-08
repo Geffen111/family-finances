@@ -181,6 +181,11 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   things. Exact rather than by merchant key on purpose: two loans both called "Loan
   Repayment" share a key but differ in amount and date. The scan dialog reports that
   refusal as "already in your list" and marks the row Added, since it is.
+  Finding the ones already there is a separate, looser pass: `duplicate_groups`
+  (command `find_duplicate_costs`) groups live items by merchant key + kind +
+  cadence + amount, **letting the dates differ** — the pair this finds was added
+  twice and only one copy has rolled forward. It only reports; the page shows a
+  "Review" notice and you delete the spare.
 - **`cashflow::expand_bills(pool, from, to)`** is the one place a recurring cost becomes
   dated occurrences: it rolls a stale `next_due_date` forward into the window, stops at
   `end_date`, and treats a `One-off` as exactly one occurrence that is *never* rolled
