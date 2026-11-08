@@ -14,6 +14,25 @@ use tauri::State;
 /// repeating cadences, so there is one list to read and one list to forecast.
 pub const ONE_OFF: &str = "One-off";
 
+/// Which way the money goes. Stored on the same row as the cadence, because a
+/// fortnightly pay and a fortnightly bill differ only in sign — splitting them
+/// into two tables would duplicate the expansion and the forecast wiring.
+pub const KIND_EXPENSE: &str = "expense";
+pub const KIND_INCOME: &str = "income";
+
+/// An unknown kind is an error rather than a silent "expense": a mistyped kind
+/// would otherwise quietly subtract your salary.
+pub fn validate_kind(kind: &str) -> Result<(), String> {
+    if kind == KIND_EXPENSE || kind == KIND_INCOME {
+        Ok(())
+    } else {
+        Err(format!(
+            "Unknown kind \"{}\" — expected \"expense\" or \"income\".",
+            kind
+        ))
+    }
+}
+
 /// Canonical payment frequencies and how many payments they amount to per
 /// calendar month. Used to normalise a recurring cost to a monthly figure.
 /// Keep the labels in sync with the frontend `<select>` options.
@@ -42,6 +61,8 @@ pub struct RecurringItem {
     /// The id as well as the name, so adding a detected item to the tracked
     /// list can carry its category over instead of matching on text.
     pub category_id: Option<i64>,
+    /// True when this is money coming in (a pay, a dividend).
+    pub is_income: bool,
     pub frequency: String,
     pub occurrences: i64,
     pub avg_amount: f64,
@@ -87,11 +108,11 @@ fn median(mut values: Vec<f64>) -> f64 {
 pub async fn get_recurring_transactions(
     pool: State<'_, SqlitePool>,
 ) -> Result<Vec<RecurringItem>, String> {
-    let rows = sqlx::query_as::<_, (String, String, f64, Option<String>, Option<i64>)>(
-        "SELECT t.date, t.description, t.debit, c.name, c.id \
+    let rows = sqlx::query_as::<_, (String, String, f64, f64, Option<String>, Option<i64>)>(
+        "SELECT t.date, t.description, t.debit, t.credit, c.name, c.id \
          FROM transactions t \
          LEFT JOIN categories c ON t.category_id = c.id \
-         WHERE t.debit > 0 \
+         WHERE (t.debit > 0 OR t.credit > 0) \
            AND NOT EXISTS (SELECT 1 FROM categories xc WHERE xc.id = t.category_id AND xc.exclude_from_budget = 1) \
          ORDER BY t.date ASC",
     )
@@ -106,9 +127,11 @@ pub async fn get_recurring_transactions(
         category: Option<String>,
         category_id: Option<i64>,
     }
-    let mut groups: HashMap<String, Entry> = HashMap::new();
+    // Keyed by merchant *and* side: a merchant you both pay and get refunded by
+    // is two different rhythms, and merging them would average them together.
+    let mut groups: HashMap<(String, bool), Entry> = HashMap::new();
 
-    for (date_str, desc, debit, category, category_id) in rows {
+    for (date_str, desc, debit, credit, category, category_id) in rows {
         let key = normalize_desc(&desc);
         if key.is_empty() {
             continue;
@@ -116,7 +139,9 @@ pub async fn get_recurring_transactions(
         let Ok(date) = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") else {
             continue;
         };
-        let e = groups.entry(key).or_insert_with(|| Entry {
+        let is_income = credit > 0.0;
+        let amount = if is_income { credit } else { debit };
+        let e = groups.entry((key, is_income)).or_insert_with(|| Entry {
             dates: Vec::new(),
             amounts: Vec::new(),
             sample_desc: desc.clone(),
@@ -124,24 +149,24 @@ pub async fn get_recurring_transactions(
             category_id,
         });
         e.dates.push(date);
-        e.amounts.push(debit);
+        e.amounts.push(amount);
     }
 
     // The merchant keys already in the tracked list, so a detected item that is
     // already an upcoming expense can be marked rather than offered again.
-    let tracked_names = sqlx::query_scalar::<_, String>("SELECT name FROM recurring_costs")
+    let tracked_rows = sqlx::query_as::<_, (String, String)>("SELECT name, kind FROM recurring_costs")
         .fetch_all(&*pool)
         .await
         .map_err(|e| format!("DB query error: {}", e))?;
-    let tracked: HashSet<String> = tracked_names
+    let tracked: HashSet<(String, bool)> = tracked_rows
         .iter()
-        .map(|n| normalize_desc(n))
-        .filter(|k| !k.is_empty())
+        .map(|(n, kind)| (normalize_desc(n), kind == KIND_INCOME))
+        .filter(|(k, _)| !k.is_empty())
         .collect();
 
     let today = chrono::Local::now().naive_local().date();
     let mut items: Vec<RecurringItem> = Vec::new();
-    for (key, entry) in groups.into_iter() {
+    for ((key, is_income), entry) in groups.into_iter() {
         if entry.dates.len() < 3 {
             continue;
         }
@@ -182,13 +207,14 @@ pub async fn get_recurring_transactions(
             description,
             category: entry.category.unwrap_or_else(|| "Uncategorised".to_string()),
             category_id: entry.category_id,
+            is_income,
             frequency: frequency.to_string(),
             occurrences,
             avg_amount,
             monthly_cost: avg_amount * per_month,
             last_date,
             next_due_date: next_due.format("%Y-%m-%d").to_string(),
-            already_tracked: tracked.contains(&key),
+            already_tracked: tracked.contains(&(key, is_income)),
         });
     }
 
@@ -203,6 +229,7 @@ type RecurringRow = (
     String,         // name
     f64,            // amount
     String,         // frequency
+    String,         // kind
     Option<i64>,    // category_id
     Option<String>, // category_name
     Option<String>, // next_due_date
@@ -213,13 +240,14 @@ type RecurringRow = (
 );
 
 fn row_to_cost(r: RecurringRow) -> RecurringCost {
-    let (id, name, amount, frequency, category_id, category_name, next_due_date, end_date, active, notes, created_at) = r;
+    let (id, name, amount, frequency, kind, category_id, category_name, next_due_date, end_date, active, notes, created_at) = r;
     let monthly_cost = amount * payments_per_month(&frequency);
     RecurringCost {
         id,
         name,
         amount,
         frequency,
+        kind,
         category_id,
         category_name,
         next_due_date,
@@ -231,7 +259,7 @@ fn row_to_cost(r: RecurringRow) -> RecurringCost {
     }
 }
 
-const SELECT_RECURRING: &str = "SELECT r.id, r.name, r.amount, r.frequency, r.category_id, c.name, \
+const SELECT_RECURRING: &str = "SELECT r.id, r.name, r.amount, r.frequency, r.kind, r.category_id, c.name, \
      r.next_due_date, r.end_date, r.active, r.notes, r.created_at \
      FROM recurring_costs r \
      LEFT JOIN categories c ON r.category_id = c.id";
@@ -290,6 +318,7 @@ pub async fn create_recurring_cost(
     name: String,
     amount: f64,
     frequency: String,
+    kind: Option<String>,
     category_id: Option<i64>,
     next_due_date: Option<String>,
     end_date: Option<String>,
@@ -297,14 +326,17 @@ pub async fn create_recurring_cost(
     notes: Option<String>,
 ) -> Result<RecurringCost, String> {
     let active = active.unwrap_or(true);
+    let kind = kind.unwrap_or_else(|| KIND_EXPENSE.to_string());
+    validate_kind(&kind)?;
     validate_dates(&frequency, &next_due_date, &end_date)?;
     sqlx::query(
-        "INSERT INTO recurring_costs (name, amount, frequency, category_id, next_due_date, end_date, active, notes) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO recurring_costs (name, amount, frequency, kind, category_id, next_due_date, end_date, active, notes) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&name)
     .bind(amount)
     .bind(&frequency)
+    .bind(&kind)
     .bind(category_id)
     .bind(&next_due_date)
     .bind(&end_date)
@@ -335,6 +367,7 @@ pub async fn update_recurring_cost(
     name: String,
     amount: f64,
     frequency: String,
+    kind: Option<String>,
     category_id: Option<i64>,
     next_due_date: Option<String>,
     end_date: Option<String>,
@@ -342,16 +375,19 @@ pub async fn update_recurring_cost(
     notes: Option<String>,
 ) -> Result<RecurringCost, String> {
     let active = active.unwrap_or(true);
+    let kind = kind.unwrap_or_else(|| KIND_EXPENSE.to_string());
+    validate_kind(&kind)?;
     validate_dates(&frequency, &next_due_date, &end_date)?;
     let affected = sqlx::query(
         "UPDATE recurring_costs \
-         SET name = ?, amount = ?, frequency = ?, category_id = ?, next_due_date = ?, end_date = ?, \
-             active = ?, notes = ? \
+         SET name = ?, amount = ?, frequency = ?, kind = ?, category_id = ?, next_due_date = ?, \
+             end_date = ?, active = ?, notes = ? \
          WHERE id = ?",
     )
     .bind(&name)
     .bind(amount)
     .bind(&frequency)
+    .bind(&kind)
     .bind(category_id)
     .bind(&next_due_date)
     .bind(&end_date)

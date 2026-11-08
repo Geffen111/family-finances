@@ -312,6 +312,9 @@ pub async fn get_scenario_baselines(
 #[derive(Debug, serde::Serialize)]
 pub struct ScheduledCategory {
     pub category_id: i64,
+    /// Which side of the category these fall on — a scheduled pay is reported
+    /// separately from a scheduled bill in the same category.
+    pub is_income: bool,
     /// Everything falling due in the window.
     pub total: f64,
     /// `total` spread over the window — the figure to compare against the
@@ -328,7 +331,7 @@ pub struct ScheduledSummary {
     pub from: String,
     pub to: String,
     pub categories: Vec<ScheduledCategory>,
-    /// Upcoming expenses with no category: a scheduled source can't see them,
+    /// Upcoming income and expenses with no category: a scheduled source can't see them,
     /// since there is no category row to attach them to.
     pub unlinked_total: f64,
     pub unlinked_items: i64,
@@ -365,14 +368,17 @@ pub async fn get_scheduled_amounts(
         services::forecast::scheduled_by_month(&pool, start, months_ahead).await?;
 
     // The map is keyed by (category, month); the page wants it per category.
-    let mut by_cat: std::collections::HashMap<i64, ScheduledCategory> = Default::default();
-    for ((category_id, _month), amount) in &map {
-        let e = by_cat.entry(*category_id).or_insert(ScheduledCategory {
-            category_id: *category_id,
-            total: 0.0,
-            monthly_equivalent: 0.0,
-            months_hit: 0,
-        });
+    let mut by_cat: std::collections::HashMap<(i64, bool), ScheduledCategory> = Default::default();
+    for ((category_id, is_income, _month), amount) in &map {
+        let e = by_cat
+            .entry((*category_id, *is_income))
+            .or_insert(ScheduledCategory {
+                category_id: *category_id,
+                is_income: *is_income,
+                total: 0.0,
+                monthly_equivalent: 0.0,
+                months_hit: 0,
+            });
         e.total += amount;
         e.months_hit += 1;
     }

@@ -19,29 +19,6 @@ pub async fn calculate_forecast(
     let mut baselines =
         compute_baselines(pool, &scenario.base_start_date, &scenario.base_end_date).await?;
 
-    // A category with nothing in the base period has no baseline row at all,
-    // so the month loop below would never visit it — and a scheduled source on
-    // a brand-new expense (next year's school camp, in a category you have
-    // never spent in) would project nothing whatever you entered. Give those
-    // categories a zero-average expense row so their dated amounts can land.
-    for adj in adjustments {
-        if adj.source == "average" || excluded_category_ids.contains(&adj.category_id) {
-            continue;
-        }
-        let has_expense_row = baselines
-            .iter()
-            .any(|b| b.category_id == adj.category_id && !b.is_income);
-        if !has_expense_row {
-            baselines.push(CategoryBaseline {
-                category_id: adj.category_id,
-                category_path: get_category_path(pool, Some(adj.category_id))
-                    .await
-                    .unwrap_or_else(|| "Uncategorised".to_string()),
-                monthly_avg: 0.0,
-                is_income: false,
-            });
-        }
-    }
 
     let start_date = NaiveDate::parse_from_str(&scenario.base_end_date, "%Y-%m-%d")
         .map_err(|e| format!("Invalid base_end_date: {}", e))?
@@ -66,11 +43,45 @@ pub async fn calculate_forecast(
         adjustments.iter().map(|a| (a.category_id, a)).collect();
     let income_growth_monthly = defaults.income_growth_pct / 100.0 / 12.0;
 
-    // The dated upcoming expenses, resolved once for the whole window rather
-    // than queried per month. Only the categories on a scheduled source read
-    // it, but it costs one query either way.
+    // The dated upcoming income and expenses, resolved once for the whole
+    // window rather than queried per month. Only the categories on a scheduled
+    // source read it, but it costs one query either way.
     let (schedule, _unlinked, _unlinked_items) =
         scheduled_by_month(pool, start_date, months_ahead).await?;
+
+    // A category with nothing in the base period has no baseline row at all,
+    // so the month loop below would never visit it — and a scheduled source on
+    // a brand-new expense (next year's school camp, in a category you have
+    // never spent in) or a new income stream would project nothing whatever
+    // you entered. Give those categories a zero-average row, on whichever side
+    // their dated amounts actually fall.
+    for adj in adjustments {
+        if adj.source == "average" || excluded_category_ids.contains(&adj.category_id) {
+            continue;
+        }
+        for is_income in [false, true] {
+            let has_side = baselines
+                .iter()
+                .any(|b| b.category_id == adj.category_id && b.is_income == is_income);
+            let has_scheduled = schedule
+                .keys()
+                .any(|(cid, inc, _)| *cid == adj.category_id && *inc == is_income);
+            // The expense side is created even with nothing scheduled, so a
+            // fixed extra still lands; the income side only when there is
+            // scheduled income, or every adjusted category would sprout one.
+            if has_side || (is_income && !has_scheduled) {
+                continue;
+            }
+            baselines.push(CategoryBaseline {
+                category_id: adj.category_id,
+                category_path: get_category_path(pool, Some(adj.category_id))
+                    .await
+                    .unwrap_or_else(|| "Uncategorised".to_string()),
+                monthly_avg: 0.0,
+                is_income,
+            });
+        }
+    }
 
     for m in 0..months_ahead {
         let current_date = add_months(&start_date, m);
@@ -89,16 +100,13 @@ pub async fn calculate_forecast(
                 continue;
             }
 
-            // Dated expenses attach to the expense side of a category only —
-            // a bill is money going out, and a category can hold both.
-            let scheduled = if bl.is_income {
-                0.0
-            } else {
-                schedule
-                    .get(&(bl.category_id, month_key.clone()))
-                    .copied()
-                    .unwrap_or(0.0)
-            };
+            // Dated amounts land on their own side of the category: a pay on
+            // the income row, a bill on the expense row. A category can hold
+            // both, and they must not cancel each other out.
+            let scheduled = schedule
+                .get(&(bl.category_id, bl.is_income, month_key.clone()))
+                .copied()
+                .unwrap_or(0.0);
 
             let amount = if let Some(adj) = adj_map.get(&bl.category_id) {
                 // The row's own % scales the scheduled part too, so "everything
@@ -267,28 +275,31 @@ pub async fn compare_scenarios(
     })
 }
 
-/// The dated upcoming expenses over a forecast window, bucketed by
-/// `(category_id, "YYYY-MM")`, plus the total and count of occurrences that
-/// aren't linked to a category (nothing can attribute those to a category row,
-/// so the UI says so rather than quietly losing them).
+/// The dated upcoming income and expenses over a forecast window, bucketed by
+/// `(category_id, is_income, "YYYY-MM")`, plus the total and count of
+/// occurrences that aren't linked to a category (nothing can attribute those
+/// to a category row, so the UI says so rather than quietly losing them).
+///
+/// The side is part of the key because a category's baseline is split the same
+/// way: a scheduled pay has to land on the income row, not be subtracted.
 ///
 /// `cashflow::expand_bills` does the cadence work — this only buckets.
 pub async fn scheduled_by_month(
     pool: &SqlitePool,
     start: NaiveDate,
     months_ahead: i64,
-) -> Result<(HashMap<(i64, String), f64>, f64, i64), String> {
+) -> Result<(HashMap<(i64, bool, String), f64>, f64, i64), String> {
     let end = add_months(&start, months_ahead.max(0));
     let bills = crate::commands::cashflow::expand_bills(pool, start, end).await?;
 
-    let mut map: HashMap<(i64, String), f64> = HashMap::new();
+    let mut map: HashMap<(i64, bool, String), f64> = HashMap::new();
     let mut unlinked = 0.0;
     let mut unlinked_items = 0;
     for b in bills {
         match b.category_id {
             Some(cid) => {
                 let month = b.due_date[..7].to_string();
-                *map.entry((cid, month)).or_insert(0.0) += b.amount;
+                *map.entry((cid, b.is_income, month)).or_insert(0.0) += b.amount;
             }
             None => {
                 unlinked += b.amount;
@@ -879,6 +890,84 @@ mod tests {
         assert!(close(unlinked, 300.0 * 12.0), "unlinked total was {unlinked}");
         assert_eq!(items, 12);
         // The linked bill is still bucketed to its own month.
-        assert_eq!(map.get(&(6, "2027-03".to_string())).copied(), Some(1200.0));
+        assert_eq!(map.get(&(6, false, "2027-03".to_string())).copied(), Some(1200.0));
+    }
+
+    /// A scheduled pay has to land on the income side: added to income, not
+    /// subtracted as if it were a bill.
+    #[tokio::test]
+    async fn scheduled_income_is_added_not_subtracted() {
+        let (pool, scenario, defaults) = pool_with_a_dated_bill().await;
+        sqlx::query(
+            "INSERT INTO recurring_costs (name, amount, frequency, kind, category_id, next_due_date)
+             VALUES ('Dividend', 2000, 'Quarterly', 'income', 7, '2026-09-15')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let adj = [adjustment(7, "scheduled", 0.0, None)];
+        let result = calculate_forecast(
+            &pool, &scenario, &adj, &defaults, &HashSet::new(), 12, 0.0, None,
+        )
+        .await
+        .unwrap();
+
+        let sept = result.months.iter().find(|m| m.month_key == "2026-09").unwrap();
+        let oct = result.months.iter().find(|m| m.month_key == "2026-10").unwrap();
+        assert!(close(sept.projected_income, 2000.0), "September income was {}", sept.projected_income);
+        assert!(close(oct.projected_income, 0.0), "October income was {}", oct.projected_income);
+        // The quarterly payment must not have been read as a bill.
+        assert!(
+            close(sept.projected_expenses, oct.projected_expenses),
+            "the dividend changed expenses: {} vs {}",
+            sept.projected_expenses,
+            oct.projected_expenses
+        );
+        assert!(sept.projected_net > oct.projected_net);
+    }
+
+    /// Income and an expense in the SAME category must not cancel out.
+    #[tokio::test]
+    async fn both_sides_of_one_category_are_kept_apart() {
+        let (pool, scenario, defaults) = pool_with_a_dated_bill().await;
+        for sql in [
+            "INSERT INTO recurring_costs (name, amount, frequency, kind, category_id, next_due_date)
+             VALUES ('Rent received', 1500, 'Monthly', 'income', 7, '2026-08-01')",
+            "INSERT INTO recurring_costs (name, amount, frequency, kind, category_id, next_due_date)
+             VALUES ('Agent fee', 120, 'Monthly', 'expense', 7, '2026-08-05')",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+
+        let adj = [adjustment(7, "scheduled", 0.0, None)];
+        let result = calculate_forecast(
+            &pool, &scenario, &adj, &defaults, &HashSet::new(), 6, 0.0, None,
+        )
+        .await
+        .unwrap();
+
+        let aug = result.months.iter().find(|m| m.month_key == "2026-08").unwrap();
+        // The category has a row per side, so both amounts must be present --
+        // netted to 1,380 would mean the two had been folded together.
+        let mut amounts: Vec<f64> = aug
+            .categories
+            .iter()
+            .filter(|c| c.category_id == 7)
+            .map(|c| c.amount)
+            .collect();
+        amounts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(amounts.len(), 2, "expected an income and an expense row, got {amounts:?}");
+        assert!(close(amounts[0], 120.0) && close(amounts[1], 1500.0), "got {amounts:?}");
+        // Income is this category's alone; expenses also carry the fixture's
+        // insurance average, so only the delta is this category's.
+        assert!(close(aug.projected_income, 1500.0), "income was {}", aug.projected_income);
+        let insurance = 1200.0 / (181.0 / DAYS_PER_MONTH);
+        assert!(
+            close(aug.projected_expenses, insurance + 120.0),
+            "expenses were {}, not {} + 120",
+            aug.projected_expenses,
+            insurance
+        );
     }
 }

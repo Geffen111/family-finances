@@ -58,6 +58,8 @@ pub struct RecurringCost {
     pub frequency: String,
     pub category_id: Option<i64>,
     pub category_name: Option<String>,
+    /// "expense" or "income" — see `recurring::KIND_INCOME`.
+    pub kind: String,
     pub next_due_date: Option<String>,
     /// Last date this cost can fall on — a car loan's final instalment, a
     /// subscription cancelled from a known date. None means "keeps going".

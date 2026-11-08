@@ -84,6 +84,7 @@
     name: string;
     amount: number;
     frequency: string;
+    kind: string;
     category_id: number | null;
     category_name: string | null;
     next_due_date: string | null;
@@ -105,6 +106,7 @@
   interface SafeToSpend {
     liquid: number;
     upcoming_total: number;
+    upcoming_income: number;
     safe_to_spend: number;
     horizon_days: number;
     bills: UpcomingBill[];
@@ -667,7 +669,11 @@
       return true;
     }),
   );
-  let recurringMonthlyTotal = $derived(liveRecurring.reduce((s, r) => s + r.monthly_cost, 0));
+  // Outgoings only: this card is about what leaves the account, and folding
+  // tracked income in would quietly net it off.
+  let recurringMonthlyTotal = $derived(
+    liveRecurring.filter((r) => r.kind !== "income").reduce((s, r) => s + r.monthly_cost, 0),
+  );
 
   async function loadRecurring() {
     try {
@@ -1146,6 +1152,11 @@
       <div class="cashflow-breakdown">
         <span>{fmt(cashflow.liquid)} liquid</span>
         <span>&minus; {fmt(cashflow.upcoming_total)} upcoming bills</span>
+        {#if cashflow.upcoming_income > 0}
+          <!-- Reported, not counted: being paid on Thursday doesn't make the
+               money safe to spend today. -->
+          <span class="cashflow-income">+ {fmt(cashflow.upcoming_income)} expected in (not counted)</span>
+        {/if}
       </div>
       {#if cashflow.bills.length > 0}
         <div class="cashflow-bills">
@@ -1170,7 +1181,7 @@
         <span class="recurring-summary-icon">&#x1F504;</span>
         <div>
           <span class="recurring-summary-label">Expected next month</span>
-          <span class="recurring-summary-count">{liveRecurring.length} upcoming expenses</span>
+          <span class="recurring-summary-count">{liveRecurring.length} upcoming items</span>
         </div>
       </div>
       <div class="recurring-summary-right">
@@ -1366,6 +1377,7 @@
   .cashflow-bill-amount { color: var(--text-primary); font-variant-numeric: tabular-nums; }
   .cashflow-more { font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.15rem; }
 
+  .cashflow-income { color: var(--text-secondary); }
   .recurring-summary-card {
     display: flex;
     justify-content: space-between;

@@ -18,6 +18,9 @@ pub struct UpcomingBill {
     pub category_id: Option<i64>,
     pub category_name: Option<String>,
     pub frequency: String,
+    /// True for money coming in. The expansion carries both sides; what each
+    /// caller does with them differs.
+    pub is_income: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -26,6 +29,10 @@ pub struct SafeToSpend {
     pub liquid: f64,
     /// Total of bills due within the horizon.
     pub upcoming_total: f64,
+    /// Expected income within the horizon. Reported but deliberately NOT
+    /// added to `safe_to_spend`: money you haven't been paid yet isn't safe
+    /// to spend, and the figure's whole job is to be the conservative one.
+    pub upcoming_income: f64,
     /// liquid − upcoming_total.
     pub safe_to_spend: f64,
     pub horizon_days: i64,
@@ -72,9 +79,10 @@ pub async fn expand_bills(
         Option<String>, // end_date
         Option<i64>,    // category_id
         Option<String>, // category_name
+        String,         // kind
     );
     let rows = sqlx::query_as::<_, Row>(
-        "SELECT r.name, r.amount, r.frequency, r.next_due_date, r.end_date, r.category_id, c.name \
+        "SELECT r.name, r.amount, r.frequency, r.next_due_date, r.end_date, r.category_id, c.name, r.kind \
          FROM recurring_costs r \
          LEFT JOIN categories c ON r.category_id = c.id \
          WHERE r.active = 1 AND r.next_due_date IS NOT NULL",
@@ -84,7 +92,8 @@ pub async fn expand_bills(
     .map_err(|e| format!("DB query error: {}", e))?;
 
     let mut bills = Vec::new();
-    for (name, amount, frequency, next_due, end_date, category_id, category_name) in rows {
+    for (name, amount, frequency, next_due, end_date, category_id, category_name, kind) in rows {
+        let is_income = kind == crate::commands::recurring::KIND_INCOME;
         let Some(due_str) = next_due else { continue };
         let Ok(mut due) = NaiveDate::parse_from_str(&due_str, "%Y-%m-%d") else {
             continue;
@@ -101,6 +110,7 @@ pub async fn expand_bills(
                 category_id,
                 category_name: category_name.clone(),
                 frequency: frequency.clone(),
+                is_income,
             });
         };
 
@@ -180,12 +190,17 @@ pub async fn get_safe_to_spend(
     let (liquid, _as_at) = liquid_assets(&pool).await?;
 
     let today = chrono::Local::now().naive_local().date();
-    let bills = expand_bills(&pool, today, today + Duration::days(horizon_days)).await?;
+    let occurrences = expand_bills(&pool, today, today + Duration::days(horizon_days)).await?;
+
+    // Expected income is reported beside the figure, not inside it.
+    let upcoming_income: f64 = occurrences.iter().filter(|b| b.is_income).map(|b| b.amount).sum();
+    let bills: Vec<UpcomingBill> = occurrences.into_iter().filter(|b| !b.is_income).collect();
     let upcoming_total: f64 = bills.iter().map(|b| b.amount).sum();
 
     Ok(SafeToSpend {
         liquid,
         upcoming_total,
+        upcoming_income,
         safe_to_spend: liquid - upcoming_total,
         horizon_days,
         bills,

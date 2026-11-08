@@ -148,9 +148,14 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   stores the AI's path as **text** and would otherwise quote a name that no longer
   exists — only where it still matches the old path, so hand-recategorised rows keep
   their history.
-- **Upcoming expenses** (the page at `/recurring`, labelled "Upcoming" in the sidebar —
-  the route is unchanged on purpose) is one list of dated money going out: repeating
-  cadences *and* `One-off`, which is a real `frequency` value, not a separate table.
+- **Upcoming income & expenses** (the page at `/recurring`, labelled "Upcoming" in the
+  sidebar — the route is unchanged on purpose) is one list of dated money moving, in
+  **both directions**: `recurring_costs.kind` is `'expense'` (the default, so everything
+  that predates migration 18 is unchanged) or `'income'`. A fortnightly pay and a
+  fortnightly bill differ only in sign, so they share the table, the expansion and the
+  forecast path; an unknown kind is an error, since a mistyped one would silently
+  subtract a salary. The list also holds repeating cadences *and* `One-off`, which is a
+  real `frequency` value, not a separate table.
   `payments_per_month("One-off")` is **0**, not the 1.0 fallback, so a school camp can't
   inflate a per-month total; the pages show its dated amount instead. `end_date` is the
   last date a cost can fall on (a car loan's final instalment). Subscription detection
@@ -161,8 +166,11 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
 - **`cashflow::expand_bills(pool, from, to)`** is the one place a recurring cost becomes
   dated occurrences: it rolls a stale `next_due_date` forward into the window, stops at
   `end_date`, and treats a `One-off` as exactly one occurrence that is *never* rolled
-  forward (a past one-off is history, not a future bill). Plain pool, like `liquid_assets`,
-  so the forecast can call it; `get_upcoming_bills` and "safe to spend" are thin callers.
+  forward (a past one-off is history, not a future bill). Each occurrence carries
+  `is_income`. Plain pool, like `liquid_assets`, so the forecast can call it;
+  `get_upcoming_bills` and "safe to spend" are thin callers. **"Safe to spend" counts
+  expenses only** — `upcoming_income` is reported beside it and deliberately not added,
+  because money you haven't been paid yet isn't safe to spend.
   Don't re-expand cadences inline — `advance` is `pub(crate)` for the same reason.
 - **Adjustment source** (`scenario_adjustments.source`, migration 17) decides where a
   category's monthly figure comes from: `average` (the default, and what every scenario
@@ -180,11 +188,13 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   silent fall back to the average. `save_scenario_adjustment` only deletes a 0%/no-fixed
   row when the source is `average` — otherwise a scheduled category would silently revert.
 - **Scheduled amounts in the forecast:** `services::forecast::scheduled_by_month` buckets
-  `expand_bills` into `(category_id, "YYYY-MM")` once per run, before the month loop, and
-  only the expense side of a category reads it (a bill is money going out). A category
-  with no base-period spend has **no baseline row**, so `calculate_forecast` adds a
-  zero-average expense row for any category on a scheduled source — without it a
-  brand-new expense in an unspent category projects nothing at all. Occurrences with no
+  `expand_bills` into `(category_id, is_income, "YYYY-MM")` once per run, before the month
+  loop. The side is part of the key because baselines are split the same way — a scheduled
+  pay lands on the category's income row and a bill on its expense row, so one category
+  can hold both without them cancelling out. A category with no base-period activity has
+  **no baseline row**, so `calculate_forecast` adds a zero-average row for any category on
+  a scheduled source — the expense side always (a fixed extra has to land somewhere) and
+  the income side only where something income-y is actually scheduled. Occurrences with no
   category can't be attributed to anything; `get_scheduled_amounts` returns them as
   `unlinked_total`/`unlinked_items` so the page can say so instead of losing them.
 - **Forecast base period:** category averages divide by `base_period_months`

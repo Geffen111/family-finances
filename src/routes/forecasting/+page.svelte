@@ -55,6 +55,7 @@
   // forecast window (from get_scheduled_amounts).
   interface ScheduledCategory {
     category_id: number;
+    is_income: boolean;
     total: number;
     monthly_equivalent: number;
     months_hit: number;
@@ -160,9 +161,20 @@
   let avgByCategory = $derived(new Map((baselines?.categories ?? []).map((c) => [c.category_id, c])));
   // The dated side: upcoming expenses falling inside the forecast window.
   let scheduled = $state<ScheduledSummary | null>(null);
+  // Keyed by category AND side: a category can hold both a scheduled pay and
+  // a scheduled bill, and they must not be read as one figure.
   let schedByCategory = $derived(
-    new Map((scheduled?.categories ?? []).map((c) => [c.category_id, c])),
+    new Map((scheduled?.categories ?? []).map((c) => [`${c.category_id}:${c.is_income}`, c])),
   );
+  // The row shows the side the category's average is on; with no average at
+  // all, whichever side has something scheduled.
+  function schedForRow(catId: number): ScheduledCategory | undefined {
+    const avg = categoryAverage(catId);
+    if (avg) return schedByCategory.get(`${catId}:${avg.income}`);
+    return (
+      schedByCategory.get(`${catId}:false`) ?? schedByCategory.get(`${catId}:true`)
+    );
+  }
 
   let loadingScenarios = $state(false);
   let loadingCategories = $state(false);
@@ -443,7 +455,7 @@
   }
 
   function scheduledMonthly(catId: number): number {
-    return schedByCategory.get(catId)?.monthly_equivalent ?? 0;
+    return schedForRow(catId)?.monthly_equivalent ?? 0;
   }
 
   // The trap this whole feature has to guard: a bill paid during the base
@@ -458,8 +470,10 @@
   // figures are shown so you can judge it.
   function doubleCountRisk(catId: number, source: string): boolean {
     if (source !== "scheduled_plus_average") return false;
+    // Income counts twice just as readily as spending does -- a pay in the
+    // base period is in that category's average too.
     const avg = categoryAverage(catId);
-    if (!avg || avg.income || avg.amount <= 0) return false;
+    if (!avg || avg.amount <= 0) return false;
     return scheduledMonthly(catId) > 0;
   }
 
@@ -938,7 +952,8 @@
         <li>
           <strong>Time the lumpy ones</strong> (optional). An average spreads car insurance
           across twelve months, which is not when you pay it. Add it on
-          <a href="/recurring">Upcoming expenses</a> with a category and a date, then set this
+          <a href="/recurring">Upcoming income &amp; expenses</a> (income too — a quarterly
+          dividend lands the same way) with a category and a date, then set this
           category's <em>Basis</em> to <em>Scheduled</em> &mdash; the forecast puts the whole
           amount in the month it falls due. Use <em>Scheduled</em> on its own when the bill is
           already in your history (its average is that same bill, smeared), and
@@ -1033,10 +1048,10 @@
           </div>
           {#if scheduled && scheduled.unlinked_items > 0}
             <p class="sched-note">
-              {scheduled.unlinked_items} upcoming {scheduled.unlinked_items === 1 ? "expense" : "expenses"}
+              {scheduled.unlinked_items} upcoming {scheduled.unlinked_items === 1 ? "item" : "items"}
               ({wholeDollars.format(scheduled.unlinked_total)} over the window) {scheduled.unlinked_items === 1 ? "has" : "have"}
               no category, so no scheduled basis can see {scheduled.unlinked_items === 1 ? "it" : "them"} —
-              <a href="/recurring">link {scheduled.unlinked_items === 1 ? "it" : "them"} on Upcoming expenses</a>.
+              <a href="/recurring">link {scheduled.unlinked_items === 1 ? "it" : "them"} on Upcoming income &amp; expenses</a>.
             </p>
           {/if}
           {#if loadingAdjustments}
@@ -1065,7 +1080,7 @@
                     {@const avg = categoryAverage(cat.id)}
                     {@const projected = projectedAmount(cat.id, adj)}
                     {@const source = sourceOf(adj)}
-                    {@const sched = schedByCategory.get(cat.id)}
+                    {@const sched = schedForRow(cat.id)}
                     {@const risky = doubleCountRisk(cat.id, source)}
                     <tr class:row-excluded={excluded}>
                       <td class="incl-col">
@@ -1090,7 +1105,7 @@
                         class="num-col sched-cell"
                         title={sched
                           ? `${wholeDollars.format(sched.total)} falling due across ${sched.months_hit} of the next ${scheduled?.months_ahead ?? monthsAhead} months`
-                          : "Nothing linked to this category in Upcoming expenses — link one there to use a scheduled basis"}
+                          : "Nothing linked to this category in Upcoming income & expenses — link one there to use a scheduled basis"}
                       >
                         {#if sched}{wholeDollars.format(sched.monthly_equivalent)}{:else}&mdash;{/if}
                       </td>

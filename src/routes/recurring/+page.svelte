@@ -8,6 +8,7 @@
     name: string;
     amount: number;
     frequency: string;
+    kind: string;
     category_id: number | null;
     category_name: string | null;
     next_due_date: string | null;
@@ -24,6 +25,7 @@
     description: string;
     category: string;
     category_id: number | null;
+    is_income: boolean;
     frequency: string;
     occurrences: number;
     avg_amount: number;
@@ -42,6 +44,10 @@
   // "One-off" is a cadence of one: a school camp or a one-time bill belongs in
   // this list too, and the forecast reads them all from the same place.
   const ONE_OFF = "One-off";
+  // Keep in sync with KIND_EXPENSE / KIND_INCOME in
+  // src-tauri/src/commands/recurring.rs.
+  const EXPENSE = "expense";
+  const INCOME = "income";
   const FREQUENCIES = [
     "Weekly",
     "Fortnightly",
@@ -62,6 +68,7 @@
   let formName = $state("");
   let formAmount = $state("");
   let formFrequency = $state("Monthly");
+  let formKind = $state(EXPENSE);
   let formCategory = $state<string>("");
   let formDate = $state("");
   let formEndDate = $state("");
@@ -94,6 +101,7 @@
   }
 
   let isOneOff = $derived(formFrequency === ONE_OFF);
+  let isIncomeForm = $derived(formKind === INCOME);
   // The only hard requirement a one-off adds: a date is the whole of what
   // places it, so saving without one is refused by the backend as well.
   let canSave = $derived(
@@ -112,8 +120,16 @@
     return c.active && !hasEnded(c) && !isSpent(c);
   }
 
+  // Each side on its own: netting them into one number would hide both.
   let monthlyTotal = $derived(
-    costs.filter((c) => isLive(c) && c.frequency !== ONE_OFF).reduce((s, c) => s + c.monthly_cost, 0),
+    costs
+      .filter((c) => isLive(c) && c.frequency !== ONE_OFF && c.kind !== INCOME)
+      .reduce((s, c) => s + c.monthly_cost, 0),
+  );
+  let monthlyIncomeTotal = $derived(
+    costs
+      .filter((c) => isLive(c) && c.frequency !== ONE_OFF && c.kind === INCOME)
+      .reduce((s, c) => s + c.monthly_cost, 0),
   );
   let annualTotal = $derived(monthlyTotal * 12);
   // One-offs have no monthly figure, so they are summed over the year ahead
@@ -124,6 +140,7 @@
         (c) =>
           c.active &&
           c.frequency === ONE_OFF &&
+          c.kind !== INCOME &&
           c.next_due_date != null &&
           c.next_due_date >= todayIso() &&
           c.next_due_date <= addYearIso(),
@@ -154,6 +171,7 @@
     formName = "";
     formAmount = "";
     formFrequency = "Monthly";
+    formKind = EXPENSE;
     formCategory = "";
     formDate = "";
     formEndDate = "";
@@ -167,6 +185,7 @@
     formName = c.name;
     formAmount = String(c.amount);
     formFrequency = c.frequency;
+    formKind = c.kind;
     formCategory = c.category_id == null ? "" : String(c.category_id);
     formDate = c.next_due_date ?? "";
     formEndDate = c.end_date ?? "";
@@ -181,6 +200,7 @@
       name: formName.trim(),
       amount: parseFloat(formAmount),
       frequency: formFrequency,
+      kind: formKind,
       categoryId: formCategory ? parseInt(formCategory, 10) : null,
       nextDueDate: formDate || null,
       // A one-off ends when it happens; an end date there would only confuse.
@@ -241,6 +261,7 @@
         name: d.description,
         amount: Math.round(d.avg_amount * 100) / 100,
         frequency: d.frequency,
+        kind: d.is_income ? INCOME : EXPENSE,
         categoryId: d.category_id,
         nextDueDate: d.next_due_date,
         endDate: null,
@@ -248,12 +269,18 @@
         notes: `Detected from ${d.occurrences} transactions`,
       });
       const next = new Set(addedKeys);
-      next.add(d.description);
+      next.add(detectedKey(d));
       addedKeys = next;
       await load();
     } catch (e) {
       showToast(String(e), "error");
     }
+  }
+
+  // A merchant can appear on both sides (paid and refunded), so the key that
+  // marks a row "Added" has to carry the side too.
+  function detectedKey(d: DetectedItem): string {
+    return `${d.is_income ? "in" : "out"}:${d.description}`;
   }
 
   let scanCandidates = $derived(detected.filter((d) => !d.already_tracked));
@@ -264,17 +291,18 @@
 <div class="page">
   <div class="header">
     <div>
-      <h1>Upcoming Expenses</h1>
+      <h1>Upcoming Income &amp; Expenses</h1>
       {#if !loading && costs.length > 0}
         <p class="subtitle">
-          {fmt(monthlyTotal)} / month · {fmt(annualTotal)} / year
+          {fmt(monthlyTotal)} out / month · {fmt(annualTotal)} / year
+          {#if monthlyIncomeTotal > 0}· {fmt(monthlyIncomeTotal)} in / month{/if}
           {#if oneOffTotal > 0}· plus {fmt(oneOffTotal)} of one-offs in the year ahead{/if}
         </p>
       {/if}
     </div>
     <div class="header-actions">
       <button class="btn" onclick={openScan}>Scan transactions</button>
-      <button class="btn btn-primary" onclick={openAdd}>Add expense</button>
+      <button class="btn btn-primary" onclick={openAdd}>Add</button>
     </div>
   </div>
 
@@ -283,19 +311,19 @@
   {:else if costs.length === 0}
     <div class="empty-state">
       <p>
-        Nothing tracked yet. Add the bills, subscriptions and one-offs you know are coming —
-        a quarterly rates notice, car insurance in March, next year's school camp — or scan
+        Nothing tracked yet. Add the money you know is coming and going — a quarterly rates
+        notice, car insurance in March, next year's school camp, a fortnightly pay — or scan
         your transactions to find the regular ones automatically.
       </p>
       <div class="empty-actions">
         <button class="btn" onclick={openScan}>Scan transactions</button>
-        <button class="btn btn-primary" onclick={openAdd}>Add expense</button>
+        <button class="btn btn-primary" onclick={openAdd}>Add</button>
       </div>
     </div>
   {:else}
     <div class="grid">
       {#each costs as c (c.id)}
-        <div class="card" class:inactive={!isLive(c)}>
+        <div class="card" class:inactive={!isLive(c)} class:card-income={c.kind === INCOME}>
           <div class="card-top">
             <span class="card-name">{c.name}</span>
             <div class="card-actions">
@@ -304,17 +332,20 @@
             </div>
           </div>
           <div class="card-figures">
-            <span class="card-amount">{fmt(c.amount)}</span>
+            <span class="card-amount">{c.kind === INCOME ? "+" : ""}{fmt(c.amount)}</span>
             <span class="card-freq">{c.frequency}</span>
+            {#if c.kind === INCOME}<span class="card-freq freq-income">Income</span>{/if}
           </div>
           <div class="card-foot">
             {#if c.frequency !== ONE_OFF}
-              <span class="card-monthly">{fmt(c.monthly_cost)}<span class="per">/mo</span></span>
+              <span class="card-monthly">
+                {c.kind === INCOME ? "+" : ""}{fmt(c.monthly_cost)}<span class="per">/mo</span>
+              </span>
             {/if}
             {#if c.category_name}<span class="chip">{c.category_name}</span>{/if}
             {#if !c.active}<span class="chip chip-muted">Paused</span>{/if}
             {#if hasEnded(c)}<span class="chip chip-muted">Ended {formatDate(c.end_date)}</span>{/if}
-            {#if isSpent(c)}<span class="chip chip-muted">Paid</span>{/if}
+            {#if isSpent(c)}<span class="chip chip-muted">{c.kind === INCOME ? "Received" : "Paid"}</span>{/if}
             {#if c.next_due_date}
               <span class="card-due">
                 {c.frequency === ONE_OFF ? "due" : "next"} {formatDate(c.next_due_date)}
@@ -334,8 +365,14 @@
 {#if showModal}
   <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) showModal = false; }}>
     <div class="modal" role="dialog" aria-modal="true" tabindex="-1">
-      <h2>{editId == null ? "Add" : "Edit"} Upcoming Expense</h2>
-      <label>Name<input type="text" bind:value={formName} placeholder="e.g. Car insurance" /></label>
+      <h2>{editId == null ? "Add" : "Edit"} Upcoming {isIncomeForm ? "Income" : "Expense"}</h2>
+      <label>Type
+        <select bind:value={formKind}>
+          <option value={EXPENSE}>Expense — money out</option>
+          <option value={INCOME}>Income — money in</option>
+        </select>
+      </label>
+      <label>Name<input type="text" bind:value={formName} placeholder={isIncomeForm ? "e.g. Pay" : "e.g. Car insurance"} /></label>
       <label>Amount<input type="number" bind:value={formAmount} placeholder="0.00" step="0.01" min="0" /></label>
       <label>Frequency
         <select bind:value={formFrequency}>
@@ -356,7 +393,10 @@
         <p class="hint">A one-off needs a date — that is what places it in the year.</p>
       {:else}
         <label>Ends after (optional)<input type="date" bind:value={formEndDate} /></label>
-        <p class="hint">The last date this falls due, if you know it — a car loan's final instalment.</p>
+        <p class="hint">
+          The last date this {isIncomeForm ? "is paid to you" : "falls due"}, if you know it —
+          {isIncomeForm ? "the end of a contract" : "a car loan's final instalment"}.
+        </p>
       {/if}
       <label>Notes (optional)<input type="text" bind:value={formNotes} placeholder="e.g. shared plan" /></label>
       <label class="checkbox"><input type="checkbox" bind:checked={formActive} /> Active</label>
@@ -373,8 +413,8 @@
     <div class="modal modal-lg" role="dialog" aria-modal="true" tabindex="-1">
       <h2>Found in your transactions</h2>
       <p class="hint">
-        Merchants paid at least three times on a regular cadence. Adding one tracks it as an
-        upcoming expense at its average amount — edit it afterwards if that isn't right.
+        Money in or out at least three times on a regular cadence. Adding one tracks it at its
+        average amount — edit it afterwards if that isn't right.
       </p>
       {#if scanning}
         <p class="loading">Scanning…</p>
@@ -384,16 +424,20 @@
         <p class="loading">Every regular payment found is already tracked.</p>
       {:else}
         <div class="scan-list">
-          {#each scanCandidates as d (d.description)}
+          {#each scanCandidates as d (detectedKey(d))}
             <div class="scan-row">
               <div class="scan-main">
-                <span class="scan-name">{d.description}</span>
+                <span class="scan-name">
+                  {d.description}
+                  {#if d.is_income}<span class="scan-in">income</span>{/if}
+                </span>
                 <span class="scan-meta">
-                  {d.frequency} · {fmt(d.avg_amount)} avg · {d.occurrences} payments ·
+                  {d.frequency} · {d.is_income ? "+" : ""}{fmt(d.avg_amount)} avg ·
+                  {d.occurrences} {d.is_income ? "payments in" : "payments"} ·
                   last {formatDate(d.last_date)} · {d.category}
                 </span>
               </div>
-              {#if addedKeys.has(d.description)}
+              {#if addedKeys.has(detectedKey(d))}
                 <span class="scan-added">Added</span>
               {:else}
                 <button class="btn btn-sm btn-primary" onclick={() => addDetected(d)}>Add</button>
@@ -412,7 +456,7 @@
 {#if showDeleteConfirm}
   <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) showDeleteConfirm = false; }}>
     <div class="modal modal-sm" role="dialog" aria-modal="true" tabindex="-1">
-      <h2>Delete Upcoming Expense</h2>
+      <h2>Delete Upcoming Item</h2>
       <p>Delete <strong>{deleteName}</strong>?</p>
       <div class="modal-actions">
         <button class="btn" onclick={() => { showDeleteConfirm = false; }}>Cancel</button>
@@ -449,6 +493,11 @@
   .per { font-size: 0.7rem; font-weight: 500; color: var(--text-secondary); }
   .chip { font-size: 0.72rem; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 999px; padding: 0.1rem 0.5rem; }
   .chip-muted { color: var(--text-muted); }
+  /* Income reads as a different kind of row at a glance, without relying on
+     the sign alone. */
+  .card-income .card-amount, .card-income .card-monthly { color: var(--pos); }
+  .freq-income { background: var(--accent-soft); }
+  .scan-in { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); background: var(--accent-soft); border-radius: 999px; padding: 0.05rem 0.4rem; margin-left: 0.3rem; }
   .card-due { font-size: 0.72rem; color: var(--text-secondary); }
   .card-notes { margin-top: 0.6rem; font-size: 0.78rem; color: var(--text-secondary); }
 
