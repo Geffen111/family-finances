@@ -182,7 +182,11 @@
   }
   .cb-trigger:hover { border-color: var(--text-muted); }
   .cb-trigger:disabled { opacity: 0.5; cursor: not-allowed; }
-  .cb-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* min-width:0 matters: without it a flex item refuses to shrink below its
+     min-content width, so this nowrap label sets a floor for the whole table
+     column it sits in and squeezes every other column. With it, the label
+     ellipsises and the column can be sized where it belongs -- in the table. */
+  .cb-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .cb-placeholder { color: var(--text-muted); }
   .cb-caret { color: var(--text-muted); font-size: 0.7rem; flex-shrink: 0; }
 

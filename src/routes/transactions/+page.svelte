@@ -105,6 +105,20 @@
 
   let searchText = $state(saved.searchText);
 
+  // Descriptions are clamped to two lines so one long bank line can't set the
+  // height of the whole table; clicking the chevron opens a row in place.
+  // Deliberately not persisted -- it is a per-glance thing, not a view setting.
+  let expandedDescIds = $state<Set<number>>(new Set());
+  // Below this, a description can't reach two lines at any sane column width,
+  // so the row doesn't need the control at all.
+  const DESC_CLAMP_CHARS = 60;
+
+  function toggleDesc(id: number) {
+    const next = new Set(expandedDescIds);
+    if (!next.delete(id)) next.add(id);
+    expandedDescIds = next;
+  }
+
 
   // Tags: txTags maps a transaction id → its tags; loaded for the whole current
   // account (data only — DOM stays windowed). allTags powers the filter + the
@@ -1040,16 +1054,30 @@
               </td>
               <td class="cell-date">{tx.date}</td>
               <td class="cell-desc" title={tx.description}>
-                <span class="desc-text">{tx.description}</span>
-                <span class="tag-chips">
-                  {#each txTags[tx.id] ?? [] as tag (tag.id)}
-                    <span class="tag-chip">
-                      #{tag.name}
-                      <button class="tag-x" title="Remove tag" onclick={() => removeTag(tx.id, tag.id)}>×</button>
-                    </span>
-                  {/each}
-                  <button class="tag-add" title="Add tag" onclick={() => openTagModal(tx.id)}>＋</button>
+                <span class="desc-text" class:desc-clamped={!expandedDescIds.has(tx.id)}>
+                  {tx.description}
                 </span>
+                {#if tx.description.length > DESC_CLAMP_CHARS}
+                  <button
+                    class="desc-expand"
+                    aria-expanded={expandedDescIds.has(tx.id)}
+                    title={expandedDescIds.has(tx.id) ? "Show less" : "Show the full description"}
+                    onclick={() => toggleDesc(tx.id)}
+                  >
+                    {expandedDescIds.has(tx.id) ? "\u2303" : "\u2304"}
+                  </button>
+                {/if}
+                {#if (txTags[tx.id] ?? []).length > 0}
+                  <span class="tag-chips">
+                    {#each txTags[tx.id] ?? [] as tag (tag.id)}
+                      <span class="tag-chip">
+                        #{tag.name}
+                        <button class="tag-x" title="Remove tag" onclick={() => removeTag(tx.id, tag.id)}>×</button>
+                      </span>
+                    {/each}
+                  </span>
+                {/if}
+                <button class="tag-add" title="Add tag" onclick={() => openTagModal(tx.id)}>＋</button>
               </td>
               <td class="cell-debit">{tx.debit > 0 ? fmt(tx.debit) : "-"}</td>
               <td class="cell-credit">{tx.credit > 0 ? fmt(tx.credit) : "-"}</td>
@@ -1342,19 +1370,49 @@
   .sort-icon { font-size: 0.7rem; margin-left: 0.25rem; color: var(--text-muted); }
   .tx-table td { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--bg-secondary); vertical-align: top; }
   /* Every column except Description is sized to its content (width:1% + nowrap
-     collapses it), so the description gets all the leftover width. */
+     collapses it), so the description gets all the leftover width. That only
+     holds while no other column can demand more than it needs — see the
+     Categorise cap below, and min-width:0 on the combobox label. */
   .cell-date { white-space: nowrap; color: var(--text-secondary); width: 1%; }
-  .cell-desc { color: var(--text-primary); }
+  .cell-desc { color: var(--text-primary); position: relative; padding-right: 1.6rem; }
   /* Wrap long bank lines onto further lines instead of clipping them — account
      numbers and references at the end of a description were being cut off.
+     break-word, not anywhere: anywhere lets the column shrink to a single
+     character, so the table happily handed its width to any greedier column.
      The cell also carries a title attribute for the full text on hover. */
-  .desc-text { display: block; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
-  .tag-chips { display: inline-flex; flex-wrap: wrap; gap: 0.25rem; align-items: center; margin-top: 0.2rem; }
+  .desc-text { display: block; white-space: normal; overflow-wrap: break-word; line-height: 1.35; }
+  /* Two lines is the cap; the chevron opens the rest in place. */
+  .desc-clamped {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  /* Row-level affordances live at the cell's right edge and are positioned, so
+     they cost no row height — the old always-on "+" put every single row,
+     tagged or not, onto a second line. */
+  .desc-expand, .tag-add {
+    position: absolute;
+    right: 0.3rem;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    line-height: 1;
+    padding: 0.1rem 0.2rem;
+  }
+  .desc-expand { top: 0.3rem; font-size: 0.8rem; }
+  .tag-add { bottom: 0.3rem; font-size: 0.7rem; border: 1px dashed var(--border-color); border-radius: 999px; opacity: 0; transition: opacity 0.1s; }
+  .desc-expand:hover { color: var(--text-primary); }
+  /* Hidden until the row is hovered or the button is tabbed to, so it is still
+     reachable from the keyboard. */
+  tr:hover .tag-add, .tag-add:focus-visible { opacity: 1; }
+  .tag-chips { display: flex; flex-wrap: wrap; gap: 0.25rem; align-items: center; margin-top: 0.2rem; }
   .tag-chip { display: inline-flex; align-items: center; gap: 0.15rem; font-size: 0.68rem; color: var(--accent); background: var(--accent-soft, var(--bg-secondary)); border-radius: 999px; padding: 0.05rem 0.4rem; }
   .tag-x { background: none; border: none; color: inherit; cursor: pointer; font-size: 0.85rem; line-height: 1; padding: 0; opacity: 0.7; }
   .tag-x:hover { opacity: 1; }
-  .tag-add { background: none; border: 1px dashed var(--border-color); color: var(--text-secondary); cursor: pointer; font-size: 0.7rem; line-height: 1; border-radius: 999px; padding: 0.05rem 0.35rem; }
-  .tag-add:hover { color: var(--text-primary); border-color: var(--text-secondary); }
+  .tag-add:hover { color: var(--text-primary); border-color: var(--text-secondary); opacity: 1; }
   .tag-filter { padding: 0.4rem 0.6rem; border: 1px solid var(--border-color); border-radius: 10px; font-size: 0.85rem; background: var(--bg-card); color: var(--text-primary); }
   .cat-filter { padding: 0.4rem 0.6rem; border: 1px solid var(--border-color); border-radius: 10px; font-size: 0.85rem; background: var(--bg-card); color: var(--text-primary); max-width: 220px; }
   .tag-modal-input { width: 100%; padding: 0.5rem 0.65rem; border: 1px solid var(--border-color); border-radius: 10px; font-size: 0.9rem; background: var(--bg-card); color: var(--text-primary); }
@@ -1376,7 +1434,11 @@
   .cell-debit { text-align: right; color: var(--neg); font-variant-numeric: tabular-nums; white-space: nowrap; width: 1%; }
   .cell-credit { text-align: right; color: var(--pos); font-variant-numeric: tabular-nums; white-space: nowrap; width: 1%; }
   .cell-balance { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-primary); white-space: nowrap; width: 1%; }
-  .cell-category { min-width: 210px; width: 1%; }
+  /* A cap, not just a floor. width:1% sizes a column to its min-content, and
+     the combobox's min-content used to be the full category path on one line
+     (~430px for the longer ones), so this column quietly took the width the
+     description needed. */
+  .cell-category { width: 280px; min-width: 210px; max-width: 280px; }
   .cat-select { width: 100%; padding: 0.3rem 0.4rem; font-size: 0.8rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-card); color: var(--text-primary); cursor: pointer; }
   .cat-select:hover { border-color: var(--text-muted); }
   .summary { display: flex; gap: 2rem; margin-top: 1rem; padding: 0.75rem 1rem; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-card); }
