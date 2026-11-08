@@ -16,7 +16,32 @@ pub async fn calculate_forecast(
     opening_cash: f64,
     cash_as_at: Option<String>,
 ) -> Result<ForecastResult, String> {
-    let baselines = compute_baselines(pool, &scenario.base_start_date, &scenario.base_end_date).await?;
+    let mut baselines =
+        compute_baselines(pool, &scenario.base_start_date, &scenario.base_end_date).await?;
+
+    // A category with nothing in the base period has no baseline row at all,
+    // so the month loop below would never visit it — and a scheduled source on
+    // a brand-new expense (next year's school camp, in a category you have
+    // never spent in) would project nothing whatever you entered. Give those
+    // categories a zero-average expense row so their dated amounts can land.
+    for adj in adjustments {
+        if adj.source == "average" || excluded_category_ids.contains(&adj.category_id) {
+            continue;
+        }
+        let has_expense_row = baselines
+            .iter()
+            .any(|b| b.category_id == adj.category_id && !b.is_income);
+        if !has_expense_row {
+            baselines.push(CategoryBaseline {
+                category_id: adj.category_id,
+                category_path: get_category_path(pool, Some(adj.category_id))
+                    .await
+                    .unwrap_or_else(|| "Uncategorised".to_string()),
+                monthly_avg: 0.0,
+                is_income: false,
+            });
+        }
+    }
 
     let start_date = NaiveDate::parse_from_str(&scenario.base_end_date, "%Y-%m-%d")
         .map_err(|e| format!("Invalid base_end_date: {}", e))?
@@ -41,6 +66,12 @@ pub async fn calculate_forecast(
         adjustments.iter().map(|a| (a.category_id, a)).collect();
     let income_growth_monthly = defaults.income_growth_pct / 100.0 / 12.0;
 
+    // The dated upcoming expenses, resolved once for the whole window rather
+    // than queried per month. Only the categories on a scheduled source read
+    // it, but it costs one query either way.
+    let (schedule, _unlinked, _unlinked_items) =
+        scheduled_by_month(pool, start_date, months_ahead).await?;
+
     for m in 0..months_ahead {
         let current_date = add_months(&start_date, m);
         let month_key = current_date.format("%Y-%m").to_string();
@@ -58,11 +89,38 @@ pub async fn calculate_forecast(
                 continue;
             }
 
+            // Dated expenses attach to the expense side of a category only —
+            // a bill is money going out, and a category can hold both.
+            let scheduled = if bl.is_income {
+                0.0
+            } else {
+                schedule
+                    .get(&(bl.category_id, month_key.clone()))
+                    .copied()
+                    .unwrap_or(0.0)
+            };
+
             let amount = if let Some(adj) = adj_map.get(&bl.category_id) {
-                if let Some(fixed) = adj.fixed_amount {
-                    fixed
-                } else {
-                    bl.monthly_avg * (1.0 + adj.adjustment_pct / 100.0)
+                // The row's own % scales the scheduled part too, so "everything
+                // goes up 10%" still means something on a scheduled category.
+                // A fixed amount is absolute and is never scaled.
+                let pct = 1.0 + adj.adjustment_pct / 100.0;
+                match adj.source.as_str() {
+                    // Dated expenses *instead of* the average: the right pick
+                    // when the bill is already in the base period, since the
+                    // average has it smeared across every month.
+                    "scheduled" => scheduled * pct,
+                    // Both — only correct when the scheduled item is new, or
+                    // the category holds other ongoing spending as well.
+                    "scheduled_plus_average" => scheduled * pct + bl.monthly_avg * pct,
+                    // Dated expenses plus your own monthly figure for the rest,
+                    // when the average isn't the number you'd use.
+                    "scheduled_plus_fixed" => scheduled * pct + adj.fixed_amount.unwrap_or(0.0),
+                    // "average" and anything unrecognised: unchanged behaviour.
+                    _ => match adj.fixed_amount {
+                        Some(fixed) => fixed,
+                        None => bl.monthly_avg * pct,
+                    },
                 }
             } else {
                 bl.monthly_avg * (1.0 + defaults.default_adjustment_pct / 100.0)
@@ -209,6 +267,38 @@ pub async fn compare_scenarios(
     })
 }
 
+/// The dated upcoming expenses over a forecast window, bucketed by
+/// `(category_id, "YYYY-MM")`, plus the total and count of occurrences that
+/// aren't linked to a category (nothing can attribute those to a category row,
+/// so the UI says so rather than quietly losing them).
+///
+/// `cashflow::expand_bills` does the cadence work — this only buckets.
+pub async fn scheduled_by_month(
+    pool: &SqlitePool,
+    start: NaiveDate,
+    months_ahead: i64,
+) -> Result<(HashMap<(i64, String), f64>, f64, i64), String> {
+    let end = add_months(&start, months_ahead.max(0));
+    let bills = crate::commands::cashflow::expand_bills(pool, start, end).await?;
+
+    let mut map: HashMap<(i64, String), f64> = HashMap::new();
+    let mut unlinked = 0.0;
+    let mut unlinked_items = 0;
+    for b in bills {
+        match b.category_id {
+            Some(cid) => {
+                let month = b.due_date[..7].to_string();
+                *map.entry((cid, month)).or_insert(0.0) += b.amount;
+            }
+            None => {
+                unlinked += b.amount;
+                unlinked_items += 1;
+            }
+        }
+    }
+    Ok((map, unlinked, unlinked_items))
+}
+
 pub async fn compute_baselines(
     pool: &SqlitePool,
     start_date: &str,
@@ -347,7 +437,7 @@ pub async fn base_period_months(
     ))
 }
 
-fn add_months(date: &NaiveDate, n: i64) -> NaiveDate {
+pub fn add_months(date: &NaiveDate, n: i64) -> NaiveDate {
     let total_months = date.month() as i64 - 1 + n;
     let year = date.year() + (total_months / 12) as i32;
     let month = (total_months % 12 + 1) as u32;
@@ -593,5 +683,202 @@ mod tests {
         let pool = pool_with_dates(&["2026-06-01"]).await;
         let (m, _, _) = base_period_months(&pool, "2020-01-01", "2020-12-31").await.unwrap();
         assert!(m > 0.0);
+    }
+
+    /// Six months of history plus a yearly bill in a category of its own, and
+    /// a scenario whose base period is that history. Returns the pool and the
+    /// scenario so each source can be forecast over the same data.
+    async fn pool_with_a_dated_bill() -> (SqlitePool, Scenario, ScenarioDefault) {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        for sql in [
+            "INSERT INTO accounts (id, name) VALUES (1, 'Everyday')",
+            "INSERT INTO categories (id, name) VALUES (1, 'Groceries'), (6, 'Insurance'), (7, 'School')",
+            "INSERT INTO transactions (account_id, category_id, date, description, debit)
+             VALUES (1, 1, '2025-06-01', 'older', 10), (1, 1, '2026-12-31', 'newer', 10)",
+            // The bill was paid once inside the base period: its average is
+            // therefore already carrying it, spread over every month.
+            "INSERT INTO transactions (account_id, category_id, date, description, debit)
+             VALUES (1, 6, '2026-03-10', 'Car insurance', 1200)",
+            // Due again in March, inside the forecast window.
+            "INSERT INTO recurring_costs (name, amount, frequency, category_id, next_due_date)
+             VALUES ('Car insurance', 1200, 'Yearly', 6, '2027-03-10')",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+
+        let scenario = Scenario {
+            id: 1,
+            name: "Test".to_string(),
+            description: None,
+            horizon: String::new(),
+            base_start_date: "2026-01-01".to_string(),
+            base_end_date: "2026-06-30".to_string(),
+            created_at: String::new(),
+        };
+        let defaults = ScenarioDefault {
+            id: 0,
+            scenario_id: 1,
+            default_adjustment_pct: 0.0,
+            income_growth_pct: 0.0,
+        };
+        (pool, scenario, defaults)
+    }
+
+    fn adjustment(category_id: i64, source: &str, pct: f64, fixed: Option<f64>) -> ScenarioAdjustment {
+        ScenarioAdjustment {
+            id: 1,
+            scenario_id: 1,
+            category_id,
+            adjustment_pct: pct,
+            fixed_amount: fixed,
+            source: source.to_string(),
+        }
+    }
+
+    /// What one category projects at in each month of the forecast.
+    async fn monthly_amounts(
+        pool: &SqlitePool,
+        scenario: &Scenario,
+        defaults: &ScenarioDefault,
+        adjustments: &[ScenarioAdjustment],
+        category_id: i64,
+    ) -> Vec<(String, f64)> {
+        let result = calculate_forecast(
+            pool,
+            scenario,
+            adjustments,
+            defaults,
+            &HashSet::new(),
+            12,
+            0.0,
+            None,
+        )
+        .await
+        .unwrap();
+        result
+            .months
+            .iter()
+            .map(|m| {
+                let amount = m
+                    .categories
+                    .iter()
+                    .find(|c| c.category_id == category_id)
+                    .map(|c| c.amount)
+                    .unwrap_or(0.0);
+                (m.month_key.clone(), amount)
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn the_average_source_is_unchanged_and_smears_the_bill() {
+        let (pool, scenario, defaults) = pool_with_a_dated_bill().await;
+        let months = monthly_amounts(&pool, &scenario, &defaults, &[], 6).await;
+
+        // $1,200 over a ~5.95-month base period, every month alike: this is
+        // exactly the behaviour the scheduled sources exist to replace.
+        let smeared = 1200.0 / (181.0 / DAYS_PER_MONTH);
+        for (key, amount) in &months {
+            assert!(close(*amount, smeared), "{key} projected {amount}, not {smeared}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_scheduled_source_puts_the_whole_bill_in_its_month() {
+        let (pool, scenario, defaults) = pool_with_a_dated_bill().await;
+        let adj = [adjustment(6, "scheduled", 0.0, None)];
+        let months = monthly_amounts(&pool, &scenario, &defaults, &adj, 6).await;
+
+        for (key, amount) in &months {
+            let expected = if key == "2027-03" { 1200.0 } else { 0.0 };
+            assert!(close(*amount, expected), "{key} projected {amount}, not {expected}");
+        }
+    }
+
+    #[tokio::test]
+    async fn scheduled_plus_average_adds_both_which_is_the_double_count() {
+        let (pool, scenario, defaults) = pool_with_a_dated_bill().await;
+        let adj = [adjustment(6, "scheduled_plus_average", 0.0, None)];
+        let months = monthly_amounts(&pool, &scenario, &defaults, &adj, 6).await;
+
+        let smeared = 1200.0 / (181.0 / DAYS_PER_MONTH);
+        let march = months.iter().find(|(k, _)| k == "2027-03").unwrap().1;
+        let other = months.iter().find(|(k, _)| k == "2027-04").unwrap().1;
+        assert!(close(march, 1200.0 + smeared), "March projected {march}");
+        assert!(close(other, smeared), "April projected {other}");
+    }
+
+    #[tokio::test]
+    async fn scheduled_plus_fixed_uses_your_own_monthly_figure_for_the_rest() {
+        let (pool, scenario, defaults) = pool_with_a_dated_bill().await;
+        // "The bill in March, and $50 a month of other insurance bits."
+        let adj = [adjustment(6, "scheduled_plus_fixed", 0.0, Some(50.0))];
+        let months = monthly_amounts(&pool, &scenario, &defaults, &adj, 6).await;
+
+        for (key, amount) in &months {
+            let expected = if key == "2027-03" { 1250.0 } else { 50.0 };
+            assert!(close(*amount, expected), "{key} projected {amount}, not {expected}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_percentage_scales_the_scheduled_amount_but_not_the_fixed_extra() {
+        let (pool, scenario, defaults) = pool_with_a_dated_bill().await;
+        let adj = [adjustment(6, "scheduled_plus_fixed", 10.0, Some(50.0))];
+        let months = monthly_amounts(&pool, &scenario, &defaults, &adj, 6).await;
+
+        let march = months.iter().find(|(k, _)| k == "2027-03").unwrap().1;
+        assert!(close(march, 1320.0 + 50.0), "March projected {march}");
+    }
+
+    /// The category has no history at all, so it has no baseline row — without
+    /// the synthetic row in calculate_forecast a brand-new expense would
+    /// silently project nothing.
+    #[tokio::test]
+    async fn a_scheduled_expense_in_an_unspent_category_still_projects() {
+        let (pool, scenario, defaults) = pool_with_a_dated_bill().await;
+        sqlx::query(
+            "INSERT INTO recurring_costs (name, amount, frequency, category_id, next_due_date)
+             VALUES ('School camp', 800, 'One-off', 7, '2026-11-20')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let adj = [adjustment(7, "scheduled", 0.0, None)];
+        let months = monthly_amounts(&pool, &scenario, &defaults, &adj, 7).await;
+
+        let nov = months.iter().find(|(k, _)| k == "2026-11").unwrap().1;
+        assert!(close(nov, 800.0), "November projected {nov}");
+        let total: f64 = months.iter().map(|(_, a)| a).sum();
+        assert!(close(total, 800.0), "the one-off fell {total} in total, not 800");
+    }
+
+    #[tokio::test]
+    async fn an_expense_with_no_category_is_reported_not_silently_dropped() {
+        let (pool, scenario, _defaults) = pool_with_a_dated_bill().await;
+        sqlx::query(
+            "INSERT INTO recurring_costs (name, amount, frequency, next_due_date)
+             VALUES ('Something', 300, 'Monthly', '2026-08-01')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let start = NaiveDate::parse_from_str(&scenario.base_end_date, "%Y-%m-%d")
+            .unwrap()
+            .succ_opt()
+            .unwrap();
+        let (map, unlinked, items) = scheduled_by_month(&pool, start, 12).await.unwrap();
+
+        assert!(close(unlinked, 300.0 * 12.0), "unlinked total was {unlinked}");
+        assert_eq!(items, 12);
+        // The linked bill is still bucketed to its own month.
+        assert_eq!(map.get(&(6, "2027-03".to_string())).copied(), Some(1200.0));
     }
 }

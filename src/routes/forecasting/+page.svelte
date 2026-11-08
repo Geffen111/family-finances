@@ -30,6 +30,43 @@
     category_path: string;
     adjustment_pct: number;
     fixed_amount: number | null;
+    source: string;
+  }
+
+  // Where a category's monthly figure comes from. Keep in sync with
+  // AdjustmentSource in src-tauri/src/commands/forecasting.rs.
+  const SOURCES = [
+    { value: "average", label: "Average" },
+    { value: "scheduled", label: "Scheduled" },
+    { value: "scheduled_plus_average", label: "Scheduled + average" },
+    { value: "scheduled_plus_fixed", label: "Scheduled + extra" },
+  ];
+  const SOURCE_HELP: Record<string, string> = {
+    average: "The base-period average, scaled by any % — or a fixed amount if you set one.",
+    scheduled:
+      "Only the dated upcoming expenses linked to this category. The right choice when the bill is already in your history: this replaces the average rather than adding to it.",
+    scheduled_plus_average:
+      "The dated expenses AND the average. Only right when the expense is new — if the bill was paid during the base period it is in the average too, and this counts it twice.",
+    scheduled_plus_fixed:
+      "The dated expenses plus your own monthly figure for whatever else sits in this category.",
+  };
+
+  // What the linked upcoming expenses add up to for one category over the
+  // forecast window (from get_scheduled_amounts).
+  interface ScheduledCategory {
+    category_id: number;
+    total: number;
+    monthly_equivalent: number;
+    months_hit: number;
+  }
+
+  interface ScheduledSummary {
+    months_ahead: number;
+    from: string;
+    to: string;
+    categories: ScheduledCategory[];
+    unlinked_total: number;
+    unlinked_items: number;
   }
 
   interface ScenarioDefault {
@@ -121,6 +158,11 @@
   let excludedCategoryIds = $state<number[]>([]);
   let baselines = $state<ScenarioBaselines | null>(null);
   let avgByCategory = $derived(new Map((baselines?.categories ?? []).map((c) => [c.category_id, c])));
+  // The dated side: upcoming expenses falling inside the forecast window.
+  let scheduled = $state<ScheduledSummary | null>(null);
+  let schedByCategory = $derived(
+    new Map((scheduled?.categories ?? []).map((c) => [c.category_id, c])),
+  );
 
   let loadingScenarios = $state(false);
   let loadingCategories = $state(false);
@@ -200,6 +242,34 @@
     loadScenarios().then(restoreView);
     loadCategories();
   });
+
+  // The scheduled amounts depend on both the open scenario and the horizon, so
+  // they are loaded here rather than inside loadScenarioConfig -- dragging
+  // "months ahead" changes the window and therefore every /mo figure.
+  $effect(() => {
+    const id = selectedScenario?.id;
+    const months = monthsAhead;
+    if (id == null) {
+      scheduled = null;
+      return;
+    }
+    loadScheduled(id, months);
+  });
+
+  async function loadScheduled(scenarioId: number, months: number) {
+    try {
+      const summary = await invoke<ScheduledSummary>("get_scheduled_amounts", {
+        scenarioId,
+        monthsAhead: months,
+      });
+      if (selectedScenario?.id !== scenarioId) return;
+      scheduled = summary;
+    } catch (e) {
+      // Not fatal: the table just shows no scheduled figures.
+      scheduled = null;
+      showToast(String(e), "error");
+    }
+  }
 
   // Put the page back the way it was left: reopen the scenario that was open,
   // and re-run the comparison that was on screen (the forecast itself isn't
@@ -328,7 +398,12 @@
     }
   }
 
-  async function saveAdjustment(catId: number, pct: number, fixed: number | null) {
+  async function saveAdjustment(
+    catId: number,
+    pct: number,
+    fixed: number | null,
+    source: string,
+  ) {
     if (!selectedScenario) return;
     try {
       await invoke("save_scenario_adjustment", {
@@ -336,11 +411,56 @@
         categoryId: catId,
         adjustmentPct: pct,
         fixedAmount: fixed,
+        source,
       });
       await refreshScenarioConfig();
     } catch (e) {
       showToast(String(e), "error");
     }
+  }
+
+  function sourceOf(adj: ScenarioAdjustmentWithPath | undefined): string {
+    return adj?.source ?? "average";
+  }
+  function usesScheduled(source: string): boolean {
+    return source !== "average";
+  }
+  // Only two sources read fixed_amount: "average" (instead of the average) and
+  // "scheduled + extra" (on top of the dated expenses).
+  function usesFixed(source: string): boolean {
+    return source === "average" || source === "scheduled_plus_fixed";
+  }
+
+  async function changeSource(
+    catId: number,
+    adj: ScenarioAdjustmentWithPath | undefined,
+    source: string,
+  ) {
+    // A fixed amount means nothing on these two, and leaving a stale one in the
+    // DB would make the row read as "Fixed" if you switched back.
+    const fixed = usesFixed(source) ? (adj?.fixed_amount ?? null) : null;
+    await saveAdjustment(catId, adj?.adjustment_pct ?? 0, fixed, source);
+  }
+
+  function scheduledMonthly(catId: number): number {
+    return schedByCategory.get(catId)?.monthly_equivalent ?? 0;
+  }
+
+  // The trap this whole feature has to guard: a bill paid during the base
+  // period is already inside that category's average, spread over every month.
+  // Adding the dated amount on top counts it twice.
+  //
+  // The test is deliberately "both sides are non-zero", not "the two figures
+  // are close": a yearly $1,200 bill paid once inside a six-month base period
+  // averages ~$200/month against a scheduled ~$100/month, so a similarity
+  // threshold would stay quiet on exactly the case it exists for. If a category
+  // has history AND dated expenses, the overlap is worth flagging and the
+  // figures are shown so you can judge it.
+  function doubleCountRisk(catId: number, source: string): boolean {
+    if (source !== "scheduled_plus_average") return false;
+    const avg = categoryAverage(catId);
+    if (!avg || avg.income || avg.amount <= 0) return false;
+    return scheduledMonthly(catId) > 0;
   }
 
   async function toggleCategoryExclusion(catId: number, include: boolean) {
@@ -816,6 +936,17 @@
           yearly income growth rate.
         </li>
         <li>
+          <strong>Time the lumpy ones</strong> (optional). An average spreads car insurance
+          across twelve months, which is not when you pay it. Add it on
+          <a href="/recurring">Upcoming expenses</a> with a category and a date, then set this
+          category's <em>Basis</em> to <em>Scheduled</em> &mdash; the forecast puts the whole
+          amount in the month it falls due. Use <em>Scheduled</em> on its own when the bill is
+          already in your history (its average is that same bill, smeared), and
+          <em>Scheduled + average</em> or <em>+ extra</em> only when there is other spending in
+          the category as well. <em>Sched /mo</em> next to <em>Avg /mo</em> is there to be
+          compared: two similar figures usually mean one bill arriving twice.
+        </li>
+        <li>
           <strong>Generate</strong>: tick up to 3 scenarios, choose how many months ahead, and
           compare. The dashed <em>Baseline</em> line is your whole-history averages with no
           changes, as a reference point.
@@ -900,6 +1031,14 @@
           <div class="panel-header">
             <h3>Category Adjustments</h3>
           </div>
+          {#if scheduled && scheduled.unlinked_items > 0}
+            <p class="sched-note">
+              {scheduled.unlinked_items} upcoming {scheduled.unlinked_items === 1 ? "expense" : "expenses"}
+              ({wholeDollars.format(scheduled.unlinked_total)} over the window) {scheduled.unlinked_items === 1 ? "has" : "have"}
+              no category, so no scheduled basis can see {scheduled.unlinked_items === 1 ? "it" : "them"} —
+              <a href="/recurring">link {scheduled.unlinked_items === 1 ? "it" : "them"} on Upcoming expenses</a>.
+            </p>
+          {/if}
           {#if loadingAdjustments}
             <p class="loading">Loading adjustments...</p>
           {:else if adjustableCategories.length === 0}
@@ -912,8 +1051,10 @@
                     <th class="incl-col" title="Include this category in this scenario's forecast">Incl.</th>
                     <th>Category</th>
                     <th class="num-col" title="Average per month over the base period — the figure a % adjustment scales">Avg /mo</th>
+                    <th class="num-col" title="What the upcoming expenses linked to this category add up to over the forecast window, spread per month — compare it with Avg /mo before adding both">Sched /mo</th>
+                    <th class="basis-col" title="Where this category's monthly figure comes from: its average, the dated upcoming expenses, or both">Basis</th>
                     <th class="num-col">% Adj</th>
-                    <th class="num-col" title="Leave blank to use the average (adjusted by any %) — shown greyed in the box">Fixed Amount</th>
+                    <th class="num-col" title="Under Average this replaces the average; under Scheduled + extra it is an extra on top of the dated expenses">Fixed / extra</th>
                     <th class="status-col"></th>
                   </tr>
                 </thead>
@@ -923,6 +1064,9 @@
                     {@const excluded = excludedCategoryIds.includes(cat.id)}
                     {@const avg = categoryAverage(cat.id)}
                     {@const projected = projectedAmount(cat.id, adj)}
+                    {@const source = sourceOf(adj)}
+                    {@const sched = schedByCategory.get(cat.id)}
+                    {@const risky = doubleCountRisk(cat.id, source)}
                     <tr class:row-excluded={excluded}>
                       <td class="incl-col">
                         <input
@@ -942,15 +1086,38 @@
                       >
                         {#if avg}{avg.income ? "+" : ""}{wholeDollars.format(avg.amount)}{:else}&mdash;{/if}
                       </td>
+                      <td
+                        class="num-col sched-cell"
+                        title={sched
+                          ? `${wholeDollars.format(sched.total)} falling due across ${sched.months_hit} of the next ${scheduled?.months_ahead ?? monthsAhead} months`
+                          : "Nothing linked to this category in Upcoming expenses — link one there to use a scheduled basis"}
+                      >
+                        {#if sched}{wholeDollars.format(sched.monthly_equivalent)}{:else}&mdash;{/if}
+                      </td>
+                      <td class="basis-col">
+                        <select
+                          class="basis-select"
+                          value={source}
+                          disabled={excluded}
+                          title={SOURCE_HELP[source]}
+                          onchange={(e) =>
+                            changeSource(cat.id, adj, (e.target as HTMLSelectElement).value)}
+                        >
+                          {#each SOURCES as opt}<option value={opt.value}>{opt.label}</option>{/each}
+                        </select>
+                      </td>
                       <td class="num-col">
                         <input
                           type="number"
                           class="adj-input"
                           value={adj?.adjustment_pct ?? 0}
                           disabled={excluded}
+                          title={usesScheduled(source)
+                            ? "Scales the dated amounts (and the average, where this basis uses it) — a fixed amount is never scaled"
+                            : "Scales the average: −20 = spend 20% less"}
                           onchange={(e) => {
                             const val = parseFloat((e.target as HTMLInputElement).value) || 0;
-                            saveAdjustment(cat.id, val, adj?.fixed_amount ?? null);
+                            saveAdjustment(cat.id, val, adj?.fixed_amount ?? null, source);
                           }}
                           step="0.1"
                         />
@@ -960,15 +1127,21 @@
                           type="number"
                           class="adj-input"
                           value={adj?.fixed_amount ?? ""}
-                          placeholder={wholeDollars.format(projected)}
-                          title={adj?.fixed_amount != null
-                            ? "Fixed monthly amount — clear it to go back to the average"
-                            : `Left blank, this projects at ${wholeDollars.format(projected)} a month`}
-                          disabled={excluded}
+                          placeholder={source === "scheduled_plus_fixed"
+                            ? "0"
+                            : wholeDollars.format(projected)}
+                          disabled={excluded || !usesFixed(source)}
+                          title={source === "scheduled_plus_fixed"
+                            ? "An extra monthly amount on top of the dated expenses"
+                            : usesFixed(source)
+                              ? adj?.fixed_amount != null
+                                ? "Fixed monthly amount — clear it to go back to the average"
+                                : `Left blank, this projects at ${wholeDollars.format(projected)} a month`
+                              : "This basis takes its figure from the dated expenses, so there is nothing to fix here"}
                           onchange={(e) => {
                             const raw = (e.target as HTMLInputElement).value;
                             const val = raw ? parseFloat(raw) : null;
-                            saveAdjustment(cat.id, adj?.adjustment_pct ?? 0, val);
+                            saveAdjustment(cat.id, adj?.adjustment_pct ?? 0, val, source);
                           }}
                           step="0.01"
                         />
@@ -976,6 +1149,15 @@
                       <td class="status-col">
                         {#if excluded}
                           <span class="badge badge-excluded">Excluded</span>
+                        {:else if risky}
+                          <span
+                            class="badge badge-warn"
+                            title={`This category averaged ${wholeDollars.format(avg?.amount ?? 0)} a month over the base period, and its linked expenses come to ${wholeDollars.format(scheduledMonthly(cat.id))} a month. If those are the same bill, this basis counts it twice — the average already contains whatever you paid during the base period. Use Scheduled on its own, or Scheduled + extra with your own figure for the rest.`}
+                          >&#9888; Double count?</span>
+                        {:else if usesScheduled(source)}
+                          <span class="badge badge-sched" title={SOURCE_HELP[source]}>
+                            {source === "scheduled" ? "Scheduled" : source === "scheduled_plus_average" ? "Sched + avg" : "Sched + extra"}
+                          </span>
                         {:else if adj?.fixed_amount != null}
                           <span class="badge badge-fixed">Fixed</span>
                         {:else if (adj?.adjustment_pct ?? 0) !== 0}
@@ -1420,14 +1602,20 @@
   @media (max-width: 800px) { .config-grid { grid-template-columns: 1fr; } }
   .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
 
-  .adj-table-wrap { max-height: 400px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 10px; }
+  /* overflow on both axes: with eight columns a narrow window can't fit the
+     table, and scrolling it is better than squeezing the category path to a
+     few characters a line. */
+  .adj-table-wrap { max-height: 400px; overflow: auto; border: 1px solid var(--border-color); border-radius: 10px; }
   .adj-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
   .adj-table th { text-align: left; padding: 0.5rem 0.5rem; background: var(--bg-secondary); border-bottom: 1px solid var(--border-color); font-weight: 600; color: var(--text-primary); position: sticky; top: 0; z-index: 1; white-space: nowrap; }
   .adj-table td { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-color); color: var(--text-primary); }
   /* Every column but Category is sized to its content (width:1% + nowrap), so
      the category path gets all the leftover width — and wraps onto a second
      line rather than being clipped at a fixed 200px. */
-  .cat-cell { white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
+  /* A floor, and break-word rather than anywhere: without both, this column
+     is infinitely squeezable and gives all its width to any column that asks
+     (which is how one long path ended up five lines tall). */
+  .cat-cell { white-space: normal; overflow-wrap: break-word; line-height: 1.35; min-width: 150px; }
   .adj-table .num-col, .status-col { width: 1%; white-space: nowrap; }
   .adj-table th.num-col { text-align: right; }
   .avg-cell { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
@@ -1441,11 +1629,23 @@
   .row-excluded .cat-cell { color: var(--text-muted); text-decoration: line-through; }
   .num-col { text-align: right; }
   .adj-input { width: 72px; padding: 0.3rem 0.4rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.8rem; text-align: right; }
+  .adj-input:disabled { background: var(--bg-secondary); color: var(--text-muted); }
+  /* A select's intrinsic width is its longest option ("Scheduled + average"),
+     which in a content-sized table column would set a floor and squeeze the
+     category path -- the same trap the transactions table hit. Cap the column
+     and let the select fill it. */
+  .basis-col { width: 150px; min-width: 130px; max-width: 150px; }
+  .basis-select { width: 100%; padding: 0.3rem 0.35rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.78rem; background: var(--bg-card); color: var(--text-primary); }
+  .sched-cell { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+  .sched-note { font-size: 0.78rem; color: var(--text-secondary); margin: 0.5rem 0 0.25rem; line-height: 1.4; }
+  .sched-note a { color: var(--accent); }
 
   .badge { font-size: 0.7rem; padding: 0.15rem 0.4rem; border-radius: 4px; font-weight: 500; }
   .badge-default { background: var(--bg-secondary); color: var(--text-secondary); }
   .badge-pct { background: var(--accent-soft); color: var(--accent); }
   .badge-fixed { background: var(--amber); color: #fff; }
+  .badge-sched { background: var(--accent-soft); color: var(--text-primary); border: 1px solid var(--border-color); }
+  .badge-warn { background: var(--amber); color: #fff; }
   .badge-excluded { background: var(--neg); color: #fff; }
 
   .defaults-display { display: flex; flex-direction: column; gap: 0.5rem; }

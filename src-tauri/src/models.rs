@@ -107,7 +107,12 @@ pub struct ScenarioAdjustment {
     pub scenario_id: i64,
     pub category_id: i64,
     pub adjustment_pct: f64,
+    /// Under `average` this replaces the average; under `scheduled_plus_fixed`
+    /// it is an *extra* on top of the dated expenses. See `AdjustmentSource`.
     pub fixed_amount: Option<f64>,
+    /// Where this category's monthly figure comes from — see `AdjustmentSource`
+    /// in `commands::forecasting`.
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -268,6 +273,7 @@ pub struct ScenarioAdjustmentWithPath {
     pub category_path: String,
     pub adjustment_pct: f64,
     pub fixed_amount: Option<f64>,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

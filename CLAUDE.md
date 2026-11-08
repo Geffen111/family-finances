@@ -24,7 +24,8 @@ pnpm build                                                       # vite build, w
 ```
 Backend tests: `cargo test --lib` in `src-tauri/` (in-memory SQLite, real migrations):
 the forecast base-period maths and cash projection, `liquid_assets`, the category
-rename modes, and the upcoming-expense expansion (`expand_bills`). CI doesn't run them, so run them when touching that code.
+rename modes, the upcoming-expense expansion (`expand_bills`), and the four
+adjustment sources (which are easy to get quietly wrong). CI doesn't run them, so run them when touching that code.
 `pnpm check` (svelte-check) does NOT gate the build, but keep it at 0/0. `link.exe` is
 present locally, so `cargo check` works.
 
@@ -163,6 +164,29 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   forward (a past one-off is history, not a future bill). Plain pool, like `liquid_assets`,
   so the forecast can call it; `get_upcoming_bills` and "safe to spend" are thin callers.
   Don't re-expand cadences inline — `advance` is `pub(crate)` for the same reason.
+- **Adjustment source** (`scenario_adjustments.source`, migration 17) decides where a
+  category's monthly figure comes from: `average` (the default, and what every scenario
+  did before), `scheduled` (only the dated upcoming expenses linked to the category),
+  `scheduled_plus_average`, or `scheduled_plus_fixed` (dated expenses plus `fixed_amount`
+  as a *monthly extra* — the same column means "instead of the average" under `average`).
+  The thing to understand before touching this: **a bill paid inside the base period is
+  already in that category's average**, smeared over every month, so `scheduled` on its
+  own is the right pick for an existing bill and the `plus` modes are for genuinely new
+  ones. The forecasting page warns on `scheduled_plus_average` whenever the category has
+  both history and linked expenses — *not* on the two figures being similar, which would
+  stay quiet on exactly the common case (a yearly $1,200 bill in a six-month base period
+  averages ~$200/mo against a scheduled ~$100/mo). The row's `adjustment_pct` scales the
+  scheduled part; a fixed amount is never scaled. Unknown sources are an error, not a
+  silent fall back to the average. `save_scenario_adjustment` only deletes a 0%/no-fixed
+  row when the source is `average` — otherwise a scheduled category would silently revert.
+- **Scheduled amounts in the forecast:** `services::forecast::scheduled_by_month` buckets
+  `expand_bills` into `(category_id, "YYYY-MM")` once per run, before the month loop, and
+  only the expense side of a category reads it (a bill is money going out). A category
+  with no base-period spend has **no baseline row**, so `calculate_forecast` adds a
+  zero-average expense row for any category on a scheduled source — without it a
+  brand-new expense in an unspent category projects nothing at all. Occurrences with no
+  category can't be attributed to anything; `get_scheduled_amounts` returns them as
+  `unlinked_total`/`unlinked_items` so the page can say so instead of losing them.
 - **Forecast base period:** category averages divide by `base_period_months`
   (`services/forecast.rs`) — the period clamped to the imported data's date range, in days
   ÷ 30.44. Don't go back to counting whole months: `end_month − start_month` made
