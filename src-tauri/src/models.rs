@@ -59,10 +59,14 @@ pub struct RecurringCost {
     pub category_id: Option<i64>,
     pub category_name: Option<String>,
     pub next_due_date: Option<String>,
+    /// Last date this cost can fall on — a car loan's final instalment, a
+    /// subscription cancelled from a known date. None means "keeps going".
+    pub end_date: Option<String>,
     pub active: bool,
     pub notes: Option<String>,
     pub created_at: String,
     /// Normalised to a per-month cost, derived from `amount` and `frequency`.
+    /// Zero for a one-off, which has no monthly equivalent.
     pub monthly_cost: f64,
 }
 

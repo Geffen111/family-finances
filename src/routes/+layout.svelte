@@ -113,7 +113,7 @@
     { href: "/categories", label: "Categories", icon: "categories" },
     { href: "/forecasting", label: "Forecasting", icon: "forecasting" },
     { href: "/goals", label: "Goals", icon: "goals" },
-    { href: "/recurring", label: "Recurring", icon: "recurring" },
+    { href: "/recurring", label: "Upcoming", icon: "recurring" },
     { href: "/settings", label: "Settings", icon: "settings" },
   ];
 

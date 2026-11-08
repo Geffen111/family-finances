@@ -23,8 +23,8 @@ PATH="/c/Program Files/nodejs:$APPDATA/npm:$PATH" pnpm check    # want 0 errors 
 pnpm build                                                       # vite build, what CI runs
 ```
 Backend tests: `cargo test --lib` in `src-tauri/` (in-memory SQLite, real migrations):
-the forecast base-period maths and cash projection, `liquid_assets`, and the category
-rename modes. CI doesn't run them, so run them when touching that code.
+the forecast base-period maths and cash projection, `liquid_assets`, the category
+rename modes, and the upcoming-expense expansion (`expand_bills`). CI doesn't run them, so run them when touching that code.
 `pnpm check` (svelte-check) does NOT gate the build, but keep it at 0/0. `link.exe` is
 present locally, so `cargo check` works.
 
@@ -72,7 +72,7 @@ CI quirks that are load-bearing — don't "simplify" these away:
 ## Backend layout (`src-tauri/src/commands/`)
 `import` (bank CSV, dedups), `historical` (one-time legacy spreadsheet import, preserves
 categories/notes), `categories` (CRUD, bulk assign, exclude toggle), `categorise` (AI:
-history merchant-key lookup + few-shot, then LLM), `recurring` (subscription detection),
+history merchant-key lookup + few-shot, then LLM), `recurring` (upcoming expenses: CRUD + subscription detection),
 `dashboard` (summaries, spending, trends, budgets, net worth), `goals` (savings goals),
 `forecasting`, `insights`, `settings`, `export`, `cashflow` (upcoming-bill
 projection + "safe to spend"), `debt` (snowball/avalanche payoff sim, uses
@@ -147,6 +147,22 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   stores the AI's path as **text** and would otherwise quote a name that no longer
   exists — only where it still matches the old path, so hand-recategorised rows keep
   their history.
+- **Upcoming expenses** (the page at `/recurring`, labelled "Upcoming" in the sidebar —
+  the route is unchanged on purpose) is one list of dated money going out: repeating
+  cadences *and* `One-off`, which is a real `frequency` value, not a separate table.
+  `payments_per_month("One-off")` is **0**, not the 1.0 fallback, so a school camp can't
+  inflate a per-month total; the pages show its dated amount instead. `end_date` is the
+  last date a cost can fall on (a car loan's final instalment). Subscription detection
+  (`get_recurring_transactions`) is a *populate* action behind "Scan transactions", not a
+  second list: it returns `category_id` and a computed `next_due_date` so one click adds a
+  candidate as a tracked expense, and `already_tracked` (merchant key via `normalize_desc`)
+  keeps what you've added out of the offer.
+- **`cashflow::expand_bills(pool, from, to)`** is the one place a recurring cost becomes
+  dated occurrences: it rolls a stale `next_due_date` forward into the window, stops at
+  `end_date`, and treats a `One-off` as exactly one occurrence that is *never* rolled
+  forward (a past one-off is history, not a future bill). Plain pool, like `liquid_assets`,
+  so the forecast can call it; `get_upcoming_bills` and "safe to spend" are thin callers.
+  Don't re-expand cadences inline — `advance` is `pub(crate)` for the same reason.
 - **Forecast base period:** category averages divide by `base_period_months`
   (`services/forecast.rs`) — the period clamped to the imported data's date range, in days
   ÷ 30.44. Don't go back to counting whole months: `end_month − start_month` made

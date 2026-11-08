@@ -2,6 +2,7 @@
 // derives a "safe to spend" figure from current liquid balances. All offline —
 // works on data already in the DB.
 
+use crate::commands::recurring::ONE_OFF;
 use chrono::{Duration, Months, NaiveDate};
 use serde::Serialize;
 use sqlx::SqlitePool;
@@ -12,6 +13,9 @@ pub struct UpcomingBill {
     pub name: String,
     pub amount: f64,
     pub due_date: String,
+    /// Carried as well as the name so a caller can group by category without
+    /// matching on text — the forecast needs the id.
+    pub category_id: Option<i64>,
     pub category_name: Option<String>,
     pub frequency: String,
 }
@@ -29,8 +33,9 @@ pub struct SafeToSpend {
 }
 
 /// Advance a date by one cycle of `frequency`. Unknown cadence falls back to a
-/// month so projection never stalls.
-fn advance(date: NaiveDate, frequency: &str) -> NaiveDate {
+/// month so projection never stalls. "One-off" has no next cycle and is never
+/// passed here — `expand_bills` handles it before this is called.
+pub(crate) fn advance(date: NaiveDate, frequency: &str) -> NaiveDate {
     match frequency {
         "Weekly" => date + Duration::days(7),
         "Fortnightly" => date + Duration::days(14),
@@ -43,49 +48,78 @@ fn advance(date: NaiveDate, frequency: &str) -> NaiveDate {
     }
 }
 
-/// Bills due between today and today+`days`, expanding each active recurring
-/// cost across its cadence. A due date in the past is rolled forward to its
-/// next future occurrence first.
-#[tauri::command]
-pub async fn get_upcoming_bills(
-    pool: State<'_, SqlitePool>,
-    days: Option<i64>,
+/// Every dated occurrence of the active upcoming expenses that falls in
+/// `from..=to`, expanding each one across its cadence.
+///
+/// A due date before `from` is rolled forward to the first occurrence inside
+/// the window, so a cost whose date hasn't been touched for months still lands
+/// where it belongs. A cost with an `end_date` stops there — a car loan has a
+/// final instalment. A "One-off" has exactly one occurrence and is not rolled
+/// forward: once its date has passed it is history, not a future bill.
+///
+/// Plain pool rather than `State` so the forecast can call it too (same reason
+/// as `liquid_assets` below).
+pub async fn expand_bills(
+    pool: &SqlitePool,
+    from: NaiveDate,
+    to: NaiveDate,
 ) -> Result<Vec<UpcomingBill>, String> {
-    let days = days.unwrap_or(30).clamp(1, 365);
-    let today = chrono::Local::now().naive_local().date();
-    let horizon = today + Duration::days(days);
-
-    let rows = sqlx::query_as::<_, (String, f64, String, Option<String>, Option<String>)>(
-        "SELECT r.name, r.amount, r.frequency, r.next_due_date, c.name \
+    type Row = (
+        String,         // name
+        f64,            // amount
+        String,         // frequency
+        Option<String>, // next_due_date
+        Option<String>, // end_date
+        Option<i64>,    // category_id
+        Option<String>, // category_name
+    );
+    let rows = sqlx::query_as::<_, Row>(
+        "SELECT r.name, r.amount, r.frequency, r.next_due_date, r.end_date, r.category_id, c.name \
          FROM recurring_costs r \
          LEFT JOIN categories c ON r.category_id = c.id \
          WHERE r.active = 1 AND r.next_due_date IS NOT NULL",
     )
-    .fetch_all(&*pool)
+    .fetch_all(pool)
     .await
     .map_err(|e| format!("DB query error: {}", e))?;
 
     let mut bills = Vec::new();
-    for (name, amount, frequency, next_due, category_name) in rows {
+    for (name, amount, frequency, next_due, end_date, category_id, category_name) in rows {
         let Some(due_str) = next_due else { continue };
         let Ok(mut due) = NaiveDate::parse_from_str(&due_str, "%Y-%m-%d") else {
             continue;
         };
-        // Roll a stale due date forward to the next future occurrence.
-        let mut guard = 0;
-        while due < today && guard < 1000 {
-            due = advance(due, &frequency);
-            guard += 1;
-        }
-        // Emit every occurrence inside the window.
-        while due <= horizon && guard < 1000 {
+        let ends = end_date
+            .as_deref()
+            .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
+
+        let mut emit = |due: NaiveDate| {
             bills.push(UpcomingBill {
                 name: name.clone(),
                 amount,
                 due_date: due.format("%Y-%m-%d").to_string(),
+                category_id,
                 category_name: category_name.clone(),
                 frequency: frequency.clone(),
             });
+        };
+
+        if frequency == ONE_OFF {
+            if due >= from && due <= to && ends.is_none_or(|e| due <= e) {
+                emit(due);
+            }
+            continue;
+        }
+
+        // Roll a stale due date forward to the first occurrence in the window.
+        let mut guard = 0;
+        while due < from && guard < 1000 {
+            due = advance(due, &frequency);
+            guard += 1;
+        }
+        // Then emit every occurrence inside it, up to the end date if there is one.
+        while due <= to && ends.is_none_or(|e| due <= e) && guard < 1000 {
+            emit(due);
             due = advance(due, &frequency);
             guard += 1;
         }
@@ -93,6 +127,17 @@ pub async fn get_upcoming_bills(
 
     bills.sort_by(|a, b| a.due_date.cmp(&b.due_date));
     Ok(bills)
+}
+
+/// Bills due between today and today+`days`.
+#[tauri::command]
+pub async fn get_upcoming_bills(
+    pool: State<'_, SqlitePool>,
+    days: Option<i64>,
+) -> Result<Vec<UpcomingBill>, String> {
+    let days = days.unwrap_or(30).clamp(1, 365);
+    let today = chrono::Local::now().naive_local().date();
+    expand_bills(&pool, today, today + Duration::days(days)).await
 }
 
 /// The "Cash & accounts" figure: the latest known balance of every asset
@@ -134,7 +179,8 @@ pub async fn get_safe_to_spend(
 
     let (liquid, _as_at) = liquid_assets(&pool).await?;
 
-    let bills = get_upcoming_bills(pool, Some(horizon_days)).await?;
+    let today = chrono::Local::now().naive_local().date();
+    let bills = expand_bills(&pool, today, today + Duration::days(horizon_days)).await?;
     let upcoming_total: f64 = bills.iter().map(|b| b.amount).sum();
 
     Ok(SafeToSpend {
@@ -144,4 +190,124 @@ pub async fn get_safe_to_spend(
         horizon_days,
         bills,
     })
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    async fn add(
+        pool: &SqlitePool,
+        name: &str,
+        amount: f64,
+        frequency: &str,
+        next_due: &str,
+        end: Option<&str>,
+    ) {
+        sqlx::query(
+            "INSERT INTO recurring_costs (name, amount, frequency, next_due_date, end_date) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(name)
+        .bind(amount)
+        .bind(frequency)
+        .bind(next_due)
+        .bind(end)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    fn d(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    fn dates(bills: &[UpcomingBill]) -> Vec<&str> {
+        bills.iter().map(|b| b.due_date.as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn monthly_cost_expands_across_the_window() {
+        let pool = pool().await;
+        add(&pool, "Rent", 500.0, "Monthly", "2026-01-15", None).await;
+
+        let bills = expand_bills(&pool, d("2026-01-01"), d("2026-03-31")).await.unwrap();
+        assert_eq!(dates(&bills), ["2026-01-15", "2026-02-15", "2026-03-15"]);
+    }
+
+    #[tokio::test]
+    async fn a_stale_due_date_rolls_forward_into_the_window() {
+        let pool = pool().await;
+        // Entered a year ago and never touched since: the occurrences that
+        // belong in the window are this year's, not a replay from 2025.
+        add(&pool, "Rego", 900.0, "Yearly", "2025-03-10", None).await;
+
+        let bills = expand_bills(&pool, d("2026-01-01"), d("2026-12-31")).await.unwrap();
+        assert_eq!(dates(&bills), ["2026-03-10"]);
+    }
+
+    #[tokio::test]
+    async fn an_end_date_stops_the_expansion() {
+        let pool = pool().await;
+        // A car loan with three instalments left.
+        add(&pool, "Car loan", 420.0, "Monthly", "2026-01-20", Some("2026-03-31")).await;
+
+        let bills = expand_bills(&pool, d("2026-01-01"), d("2026-12-31")).await.unwrap();
+        assert_eq!(dates(&bills), ["2026-01-20", "2026-02-20", "2026-03-20"]);
+    }
+
+    #[tokio::test]
+    async fn an_end_date_before_the_window_yields_nothing() {
+        let pool = pool().await;
+        add(&pool, "Old gym", 60.0, "Monthly", "2025-01-05", Some("2025-06-05")).await;
+
+        let bills = expand_bills(&pool, d("2026-01-01"), d("2026-12-31")).await.unwrap();
+        assert!(bills.is_empty(), "a finished cost shouldn't project, got {:?}", dates(&bills));
+    }
+
+    #[tokio::test]
+    async fn a_one_off_falls_once_and_is_never_rolled_forward() {
+        let pool = pool().await;
+        add(&pool, "School camp", 800.0, ONE_OFF, "2026-03-12", None).await;
+        // Last year's camp has been and gone; it must not reappear as a future
+        // bill the way a repeating cost's stale date would.
+        add(&pool, "Last year's camp", 760.0, ONE_OFF, "2025-03-12", None).await;
+
+        let bills = expand_bills(&pool, d("2026-01-01"), d("2026-12-31")).await.unwrap();
+        assert_eq!(dates(&bills), ["2026-03-12"]);
+        assert_eq!(bills[0].amount, 800.0);
+    }
+
+    #[tokio::test]
+    async fn a_paused_cost_is_left_out() {
+        let pool = pool().await;
+        add(&pool, "Streaming", 20.0, "Monthly", "2026-01-08", None).await;
+        sqlx::query("UPDATE recurring_costs SET active = 0")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let bills = expand_bills(&pool, d("2026-01-01"), d("2026-06-30")).await.unwrap();
+        assert!(bills.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_one_off_has_no_monthly_equivalent() {
+        use crate::commands::recurring::payments_per_month;
+        assert_eq!(payments_per_month(ONE_OFF), 0.0);
+        // An unknown label still falls back to monthly rather than vanishing.
+        assert_eq!(payments_per_month("Who knows"), 1.0);
+    }
 }

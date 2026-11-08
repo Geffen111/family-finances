@@ -87,6 +87,7 @@
     category_id: number | null;
     category_name: string | null;
     next_due_date: string | null;
+    end_date: string | null;
     active: boolean;
     notes: string | null;
     created_at: string;
@@ -654,7 +655,19 @@
     })();
   });
 
-  let recurringMonthlyTotal = $derived(recurring.filter((r) => r.active).reduce((s, r) => s + r.monthly_cost, 0));
+  // Only what is still expected to cost something: a finished car loan or a
+  // one-off that has already been paid shouldn't sit in a per-month figure.
+  // (A one-off's monthly_cost is 0, so they fall out of the sum anyway.)
+  let liveRecurring = $derived(
+    recurring.filter((r) => {
+      const today = new Date().toLocaleDateString("en-CA");
+      if (!r.active) return false;
+      if (r.end_date != null && r.end_date < today) return false;
+      if (r.frequency === "One-off" && r.next_due_date != null && r.next_due_date < today) return false;
+      return true;
+    }),
+  );
+  let recurringMonthlyTotal = $derived(liveRecurring.reduce((s, r) => s + r.monthly_cost, 0));
 
   async function loadRecurring() {
     try {
@@ -1157,7 +1170,7 @@
         <span class="recurring-summary-icon">&#x1F504;</span>
         <div>
           <span class="recurring-summary-label">Expected next month</span>
-          <span class="recurring-summary-count">{recurring.length} recurring items</span>
+          <span class="recurring-summary-count">{liveRecurring.length} upcoming expenses</span>
         </div>
       </div>
       <div class="recurring-summary-right">
