@@ -3,6 +3,7 @@
   import { format, startOfMonth, subMonths } from "date-fns";
   import { showToast } from "$lib/stores/toast.svelte";
   import CategoryCombobox from "$lib/components/CategoryCombobox.svelte";
+  import { loadView, saveView, clearView } from "$lib/viewState";
 
   interface Account {
     id: number;
@@ -70,33 +71,85 @@
   type SortKey = "date" | "description" | "debit" | "credit" | "balance";
   type SortDir = "asc" | "desc";
 
+  // Which account, filters and sort you were last looking at. See
+  // $lib/viewState -- restored on every visit, including after a restart.
+  const saved = loadView("transactions", {
+    selectedAccountId: 0,
+    sortKey: "date",
+    sortDir: "desc",
+    filterStart: "",
+    filterEnd: "",
+    activePreset: "all",
+    searchText: "",
+    tagFilterId: null as number | null,
+    categoryFilterId: "all",
+  });
+
   let accounts = $state<Account[]>([]);
-  let selectedAccountId = $state<number>(0);
+  let selectedAccountId = $state<number>(saved.selectedAccountId);
   let transactions = $state<Transaction[]>([]);
   let categories = $state<Category[]>([]);
   let loading = $state(false);
   let importing = $state(false);
 
-  let sortKey = $state<SortKey>("date");
-  let sortDir = $state<SortDir>("desc");
+  let sortKey = $state<SortKey>(saved.sortKey as SortKey);
+  let sortDir = $state<SortDir>(saved.sortDir as SortDir);
 
-  let filterStart = $state("");
-  let filterEnd = $state("");
+  let filterStart = $state(saved.filterStart);
+  let filterEnd = $state(saved.filterEnd);
   // Which date filter is active, so the matching button can be highlighted.
   // "custom" covers a manually-picked From/To range.
-  let activePreset = $state<"thisMonth" | "last3Months" | "all" | "custom">("all");
+  let activePreset = $state<"thisMonth" | "last3Months" | "all" | "custom">(
+    saved.activePreset as "thisMonth" | "last3Months" | "all" | "custom",
+  );
 
-  let searchText = $state("");
+  let searchText = $state(saved.searchText);
+
 
   // Tags: txTags maps a transaction id → its tags; loaded for the whole current
   // account (data only — DOM stays windowed). allTags powers the filter + the
   // datalist of existing tags when adding one.
   let txTags = $state<Record<number, Tag[]>>({});
   let allTags = $state<Tag[]>([]);
-  let tagFilterId = $state<number | null>(null);
+  let tagFilterId = $state<number | null>(saved.tagFilterId);
   // Category filter: "all" | "uncat" | a category id as a string. Picking a
   // parent category also matches transactions in any of its subcategories.
-  let categoryFilterId = $state<string>("all");
+  let categoryFilterId = $state<string>(saved.categoryFilterId);
+  $effect(() => {
+    saveView("transactions", {
+      selectedAccountId,
+      sortKey,
+      sortDir,
+      filterStart,
+      filterEnd,
+      activePreset,
+      searchText,
+      tagFilterId,
+      categoryFilterId,
+    });
+  });
+
+  // Filters persist across visits, so there has to be one obvious way back to
+  // "show me everything" -- otherwise a date range left on weeks ago reads as
+  // an empty account.
+  let filtersActive = $derived(
+    activePreset !== "all" ||
+      filterStart !== "" ||
+      filterEnd !== "" ||
+      searchText !== "" ||
+      tagFilterId !== null ||
+      categoryFilterId !== "all",
+  );
+
+  function resetFilters() {
+    activePreset = "all";
+    filterStart = "";
+    filterEnd = "";
+    searchText = "";
+    tagFilterId = null;
+    categoryFilterId = "all";
+    clearView("transactions");
+  }
   let showTagModal = $state(false);
   let tagModalTxId = $state<number>(0);
   let tagInput = $state("");
@@ -145,7 +198,9 @@
   $effect(() => {
     invoke<Account[]>("get_accounts").then((accs) => {
       accounts = accs;
-      if (accs.length > 0 && selectedAccountId === 0) {
+      // 0 means "nothing chosen yet"; a remembered id that no longer exists
+      // (account removed since) would otherwise leave the table empty.
+      if (accs.length > 0 && !accs.some((a) => a.id === selectedAccountId)) {
         selectedAccountId = accs[0].id;
       }
       // Warm the cache for every account in the background so later account
@@ -911,6 +966,11 @@
         {/each}
       </select>
     {/if}
+    {#if filtersActive}
+      <button class="reset-filters" onclick={() => { resetFilters(); applyFilterAndLoad(); }}>
+        Clear filters
+      </button>
+    {/if}
   </div>
 
   {#if selectedTxIds.size > 0}
@@ -1246,6 +1306,20 @@
   .filters { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; }
   .filters label { font-size: 0.8rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.3rem; }
   .filters input[type="date"] { padding: 0.3rem 0.5rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.8rem; }
+  .reset-filters {
+    padding: 0.35rem 0.7rem;
+    font-size: 0.8rem;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .reset-filters:hover {
+    border-color: var(--text-muted);
+    color: var(--text-primary);
+  }
   .search-input { margin-left: auto; min-width: 220px; padding: 0.4rem 0.6rem; border: 1px solid var(--border-color); border-radius: 10px; font-size: 0.85rem; background: var(--bg-card); color: var(--text-primary); }
 
   .bulk-bar { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; padding: 0.6rem 0.9rem; background: var(--accent-soft); border: 1px solid var(--border-color); border-radius: 14px; flex-wrap: wrap; }

@@ -3,6 +3,22 @@
   import { format, startOfMonth, endOfMonth, subMonths, startOfYear } from "date-fns";
   import { onMount } from "svelte";
   import { darkMode } from "$lib/stores/theme.svelte";
+  import { loadView, saveView } from "$lib/viewState";
+
+  // The page's own view state -- date range, each chart's timeframe and
+  // selections, and which category rows are expanded -- restored from the last
+  // visit. See $lib/viewState.
+  const saved = loadView("dashboard", {
+    activePreset: "last6Months",
+    customStart: "",
+    customEnd: "",
+    showCustom: false,
+    trendPreset: "12m",
+    selectedTrendCats: new Set<string>(),
+    breakdownPreset: "6m",
+    selectedBreakdown: "all",
+    expandedCategories: new Set<number>(),
+  });
 
   interface DashboardSummary {
     total_income: number;
@@ -115,7 +131,7 @@
   // Spending Breakdown has its own timeframe, so it fetches the tree separately
   // from the page-controlled `categoryTree` used by the Category Spending table.
   let breakdownTree = $state<CategorySpendingGroup[]>([]);
-  let expandedCategories = $state<Set<number>>(new Set());
+  let expandedCategories = $state<Set<number>>(saved.expandedCategories);
   let recurring = $state<RecurringCost[]>([]);
   let cashflow = $state<SafeToSpend | null>(null);
   let netWorth = $state<NetWorthPoint[]>([]);
@@ -143,25 +159,45 @@
   let assetError = $state("");
 
   type DatePreset = "thisMonth" | "lastMonth" | "last3Months" | "last6Months" | "last24Months" | "ytd" | "all";
-  let activePreset = $state<DatePreset>("last6Months");
-  let customStart = $state("");
-  let customEnd = $state("");
-  let showCustom = $state(false);
+  let activePreset = $state<DatePreset>(saved.activePreset as DatePreset);
+  let customStart = $state(saved.customStart);
+  let customEnd = $state(saved.customEnd);
+  let showCustom = $state(saved.showCustom);
 
   // --- Independent chart timeframes (untied from the page date picker) --------
   // Category Spending Trend: its own 6/12/24-month window + a multi-select set of
   // category names (checkboxes) so several trend lines can show at once.
   type TrendPreset = "6m" | "12m" | "24m";
-  let trendPreset = $state<TrendPreset>("12m");
-  let selectedTrendCats = $state<Set<string>>(new Set());
-  let trendCatsSeeded = false; // seed the top 3 once, then leave the user's picks
+  let trendPreset = $state<TrendPreset>(saved.trendPreset as TrendPreset);
+  let selectedTrendCats = $state<Set<string>>(saved.selectedTrendCats);
+  // Seed the top 3 once, then leave the user's picks alone -- and a restored
+  // selection counts as picks, so coming back to the page doesn't re-seed over
+  // what you chose last time.
+  let trendCatsSeeded = saved.selectedTrendCats.size > 0;
 
   // Spending Breakdown: its own timeframe, plus the parent/subcategory drill.
   type BreakdownPreset = "lastMonth" | "3m" | "6m" | "12m";
-  let breakdownPreset = $state<BreakdownPreset>("6m");
+  let breakdownPreset = $state<BreakdownPreset>(saved.breakdownPreset as BreakdownPreset);
   // "all" = one slice per parent category; otherwise the stringified parent
   // category id, drilling into that parent's subcategories.
-  let selectedBreakdown = $state<string>("all");
+  let selectedBreakdown = $state<string>(saved.selectedBreakdown);
+
+  // Write the view state back whenever any of it changes. Reading each value
+  // here is what subscribes the effect to it; the Sets are reassigned rather
+  // than mutated (see toggleTrendCat / toggleCategory), so they register too.
+  $effect(() => {
+    saveView("dashboard", {
+      activePreset,
+      customStart,
+      customEnd,
+      showCustom,
+      trendPreset,
+      selectedTrendCats,
+      breakdownPreset,
+      selectedBreakdown,
+      expandedCategories,
+    });
+  });
 
   // Parent categories kept OUT of the Spending Breakdown pie. This is chart-only
   // (internal transfers, loan repayments and investment-property/pass-through

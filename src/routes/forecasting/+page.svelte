@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
+  import { loadView, saveView } from "$lib/viewState";
   import { darkMode } from "$lib/stores/theme.svelte";
   import { formatDate } from "$lib/format";
   import { showToast } from "$lib/stores/toast.svelte";
@@ -96,6 +97,14 @@
     months_ahead: number;
   }
 
+  // Which scenario was open, what was being compared and how far ahead --
+  // restored on every visit, including after a restart. See $lib/viewState.
+  const saved = loadView("forecasting", {
+    openScenarioId: null as number | null,
+    selectedForecastIds: [] as number[],
+    monthsAhead: 12,
+  });
+
   let scenarios = $state<Scenario[]>([]);
   let categories = $state<CategoryWithPath[]>([]);
   // Categories excluded from budgets (e.g. internal transfers) never enter the
@@ -131,8 +140,8 @@
   let editEnd = $state("");
 
   // Forecast controls
-  let monthsAhead = $state(12);
-  let selectedForecastIds = $state<number[]>([]);
+  let monthsAhead = $state(saved.monthsAhead);
+  let selectedForecastIds = $state<number[]>(saved.selectedForecastIds);
   let forecastResult = $state<ForecastComparison | null>(null);
   let forecastLoading = $state(false);
   let forecastError = $state("");
@@ -176,9 +185,33 @@
   }
 
   $effect(() => {
-    loadScenarios();
+    saveView("forecasting", {
+      openScenarioId: selectedScenario?.id ?? null,
+      selectedForecastIds,
+      monthsAhead,
+    });
+  });
+
+  $effect(() => {
+    loadScenarios().then(restoreView);
     loadCategories();
   });
+
+  // Put the page back the way it was left: reopen the scenario that was open,
+  // and re-run the comparison that was on screen (the forecast itself isn't
+  // stored -- it is derived from the scenarios, so recomputing it is both
+  // cheaper and guaranteed to be current).
+  let viewRestored = false;
+  async function restoreView() {
+    if (viewRestored) return;
+    viewRestored = true;
+    // Scenarios deleted since the last visit are simply dropped.
+    const live = new Set(scenarios.map((s) => s.id));
+    selectedForecastIds = selectedForecastIds.filter((id) => live.has(id));
+    const open = scenarios.find((s) => s.id === saved.openScenarioId);
+    if (open) await selectScenario(open);
+    if (selectedForecastIds.length > 0) await runForecast();
+  }
 
   async function loadScenarios() {
     loadingScenarios = true;

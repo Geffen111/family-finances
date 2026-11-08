@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { formatDate } from "$lib/format";
+  import { loadView, saveView } from "$lib/viewState";
 
   interface AskResponse {
     answer: string;
@@ -27,12 +28,22 @@
     generated_at: string;
   }
 
+  // The last question and its answer are kept, not just the controls: an
+  // answer costs an API call, and losing it to a page switch meant asking the
+  // same thing twice. See $lib/viewState.
+  const saved = loadView("ask", {
+    question: "",
+    answer: null as AskResponse | null,
+    showWorking: false,
+    insightsRange: "last3",
+  });
+
   // --- Ask a question ---
-  let question = $state("");
+  let question = $state(saved.question);
   let asking = $state(false);
-  let answer = $state<AskResponse | null>(null);
+  let answer = $state<AskResponse | null>(saved.answer);
   let askError = $state("");
-  let showWorking = $state(false);
+  let showWorking = $state(saved.showWorking);
 
   // Ask and Insights both need the OpenRouter key; guide the user to Settings
   // rather than letting the calls fail with a raw error.
@@ -81,7 +92,11 @@
     ytd: "Year to date",
   };
 
-  let insightsRange = $state<InsightsRange>("last3");
+  let insightsRange = $state<InsightsRange>(saved.insightsRange as InsightsRange);
+
+  $effect(() => {
+    saveView("ask", { question, answer, showWorking, insightsRange });
+  });
   let insights = $state<SpendingInsights | null>(null);
   let insightsLoading = $state(false);
   let insightsError = $state("");
