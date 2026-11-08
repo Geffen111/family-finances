@@ -24,23 +24,22 @@ pub async fn create_savings_goal(
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let current = current_amount.unwrap_or(0.0);
 
-    sqlx::query(
+    // The id comes back from the INSERT itself. A follow-up
+    // `SELECT last_insert_rowid()` is not safe here: the pool holds four
+    // connections and hands out whichever is free, so that second statement
+    // can run on a connection that has inserted nothing and answer 0.
+    let id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO savings_goals (name, target_amount, current_amount, target_date, created_at) \
-         VALUES (?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?) RETURNING id",
     )
     .bind(&name)
     .bind(target_amount)
     .bind(current)
     .bind(&target_date)
     .bind(&now)
-    .execute(&*pool)
+    .fetch_one(&*pool)
     .await
     .map_err(|e| format!("DB insert error: {}", e))?;
-
-    let id = sqlx::query_scalar::<_, i64>("SELECT last_insert_rowid()")
-        .fetch_one(&*pool)
-        .await
-        .map_err(|e| format!("DB error: {}", e))?;
 
     Ok(SavingsGoal {
         id,

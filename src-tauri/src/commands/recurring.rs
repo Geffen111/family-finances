@@ -312,6 +312,54 @@ pub async fn list_recurring_costs(pool: State<'_, SqlitePool>) -> Result<Vec<Rec
     Ok(rows.into_iter().map(row_to_cost).collect())
 }
 
+/// Insert a recurring cost and read it back. Plain pool, like
+/// `cashflow::expand_bills`, so it is testable without a Tauri `State`.
+pub(crate) async fn insert_recurring_cost(
+    pool: &SqlitePool,
+    name: &str,
+    amount: f64,
+    frequency: &str,
+    kind: Option<String>,
+    category_id: Option<i64>,
+    next_due_date: Option<String>,
+    end_date: Option<String>,
+    active: Option<bool>,
+    notes: Option<String>,
+) -> Result<RecurringCost, String> {
+    let active = active.unwrap_or(true);
+    let kind = kind.unwrap_or_else(|| KIND_EXPENSE.to_string());
+    validate_kind(&kind)?;
+    validate_dates(frequency, &next_due_date, &end_date)?;
+    // The id comes back from the INSERT itself. A follow-up
+    // `SELECT last_insert_rowid()` is not safe here: the pool holds four
+    // connections and hands out whichever is free, so that second statement
+    // can run on a connection that has inserted nothing and answer 0.
+    let id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO recurring_costs (name, amount, frequency, kind, category_id, next_due_date, end_date, active, notes) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+    )
+    .bind(name)
+    .bind(amount)
+    .bind(frequency)
+    .bind(&kind)
+    .bind(category_id)
+    .bind(&next_due_date)
+    .bind(&end_date)
+    .bind(active)
+    .bind(&notes)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("DB insert error: {}", e))?;
+
+    let row = sqlx::query_as::<_, RecurringRow>(&format!("{SELECT_RECURRING} WHERE r.id = ?"))
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("DB query error: {}", e))?;
+
+    Ok(row_to_cost(row))
+}
+
 #[tauri::command]
 pub async fn create_recurring_cost(
     pool: State<'_, SqlitePool>,
@@ -325,39 +373,19 @@ pub async fn create_recurring_cost(
     active: Option<bool>,
     notes: Option<String>,
 ) -> Result<RecurringCost, String> {
-    let active = active.unwrap_or(true);
-    let kind = kind.unwrap_or_else(|| KIND_EXPENSE.to_string());
-    validate_kind(&kind)?;
-    validate_dates(&frequency, &next_due_date, &end_date)?;
-    sqlx::query(
-        "INSERT INTO recurring_costs (name, amount, frequency, kind, category_id, next_due_date, end_date, active, notes) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    insert_recurring_cost(
+        &pool,
+        &name,
+        amount,
+        &frequency,
+        kind,
+        category_id,
+        next_due_date,
+        end_date,
+        active,
+        notes,
     )
-    .bind(&name)
-    .bind(amount)
-    .bind(&frequency)
-    .bind(&kind)
-    .bind(category_id)
-    .bind(&next_due_date)
-    .bind(&end_date)
-    .bind(active)
-    .bind(&notes)
-    .execute(&*pool)
     .await
-    .map_err(|e| format!("DB insert error: {}", e))?;
-
-    let id = sqlx::query_scalar::<_, i64>("SELECT last_insert_rowid()")
-        .fetch_one(&*pool)
-        .await
-        .map_err(|e| format!("DB error: {}", e))?;
-
-    let row = sqlx::query_as::<_, RecurringRow>(&format!("{SELECT_RECURRING} WHERE r.id = ?"))
-        .bind(id)
-        .fetch_one(&*pool)
-        .await
-        .map_err(|e| format!("DB query error: {}", e))?;
-
-    Ok(row_to_cost(row))
 }
 
 #[tauri::command]
@@ -420,4 +448,65 @@ pub async fn delete_recurring_cost(pool: State<'_, SqlitePool>, id: i64) -> Resu
         .await
         .map_err(|e| format!("DB delete error: {}", e))?;
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    /// A pool with more than one live connection, over a shared in-memory
+    /// database — the app's pool holds four. `sqlite::memory:` on its own
+    /// gives each connection a *separate* database, which would hide exactly
+    /// the cross-connection bug this is here to catch.
+    async fn multi_connection_pool(name: &str) -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .min_connections(2)
+            .max_connections(2)
+            .connect(&format!("sqlite:file:{name}?mode=memory&cache=shared"))
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    /// Adding a cost has to return the row that was just written, whichever
+    /// connection the pool happens to hand out. Reading the id back with a
+    /// second statement (`SELECT last_insert_rowid()`) answered 0 on a
+    /// connection that had inserted nothing, and the read-back then failed
+    /// with "no rows returned by a query that expected to return at least one
+    /// row" — which is what "Add" in the scan dialog did.
+    #[tokio::test]
+    async fn adding_a_cost_returns_the_row_it_wrote() {
+        let pool = multi_connection_pool("insert_rowid_test").await;
+
+        for n in 1..=4 {
+            let name = format!("Bill {n}");
+            let cost = insert_recurring_cost(
+                &pool,
+                &name,
+                100.0 + n as f64,
+                "Monthly",
+                Some(KIND_EXPENSE.to_string()),
+                None,
+                Some("2027-01-15".to_string()),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("insert {n} failed: {e}"));
+
+            assert_eq!(cost.name, name);
+            assert_eq!(cost.amount, 100.0 + n as f64);
+
+            let stored: String = sqlx::query_scalar("SELECT name FROM recurring_costs WHERE id = ?")
+                .bind(cost.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap_or_else(|e| panic!("id {} from insert {n} is not a real row: {e}", cost.id));
+            assert_eq!(stored, name);
+        }
+    }
 }

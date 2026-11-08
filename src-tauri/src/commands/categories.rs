@@ -134,21 +134,21 @@ pub async fn create_category(
 ) -> Result<Category, String> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    sqlx::query(
-        "INSERT INTO categories (name, parent_id, monthly_budget, created_at) VALUES (?, ?, ?, ?)"
+    // The id comes back from the INSERT itself. A follow-up
+    // `SELECT last_insert_rowid()` is not safe here: the pool holds four
+    // connections and hands out whichever is free, so that second statement
+    // can run on a connection that has inserted nothing and answer 0.
+    let id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO categories (name, parent_id, monthly_budget, created_at) \
+         VALUES (?, ?, ?, ?) RETURNING id",
     )
     .bind(&name)
     .bind(parent_id)
     .bind(monthly_budget)
     .bind(&now)
-    .execute(&*pool)
+    .fetch_one(&*pool)
     .await
     .map_err(|e| format!("DB insert error: {}", e))?;
-
-    let id = sqlx::query_scalar::<_, i64>("SELECT last_insert_rowid()")
-        .fetch_one(&*pool)
-        .await
-        .map_err(|e| format!("DB error: {}", e))?;
 
     Ok(Category {
         id,
@@ -340,21 +340,17 @@ pub async fn apply_category_edit(
             ));
         }
 
-        sqlx::query(
-            "INSERT INTO categories (name, parent_id, monthly_budget, created_at) VALUES (?, ?, ?, ?)",
+        let new_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO categories (name, parent_id, monthly_budget, created_at) \
+             VALUES (?, ?, ?, ?) RETURNING id",
         )
         .bind(&new_name)
         .bind(new_parent_id)
         .bind(new_budget)
         .bind(&now)
-        .execute(pool)
+        .fetch_one(pool)
         .await
         .map_err(|e| format!("DB insert error: {}", e))?;
-
-        let new_id = sqlx::query_scalar::<_, i64>("SELECT last_insert_rowid()")
-            .fetch_one(pool)
-            .await
-            .map_err(|e| format!("DB error: {}", e))?;
 
         return Ok(Category {
             id: new_id,

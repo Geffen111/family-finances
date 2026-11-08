@@ -91,16 +91,17 @@ async fn get_or_create_account(
     {
         return Ok(id);
     }
-    sqlx::query("INSERT INTO accounts (name, type) VALUES (?, 'asset')")
-        .bind(name)
-        .execute(pool)
-        .await
-        .map_err(|e| format!("DB insert error: {}", e))?;
+    // RETURNING, not a follow-up `SELECT last_insert_rowid()` — the pool can
+    // answer that from a connection that has inserted nothing.
+    let id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO accounts (name, type) VALUES (?, 'asset') RETURNING id",
+    )
+    .bind(name)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("DB insert error: {}", e))?;
     *created += 1;
-    sqlx::query_scalar::<_, i64>("SELECT last_insert_rowid()")
-        .fetch_one(pool)
-        .await
-        .map_err(|e| format!("DB error: {}", e))
+    Ok(id)
 }
 
 async fn get_or_create_parent(
@@ -117,16 +118,15 @@ async fn get_or_create_parent(
     {
         return Ok(id);
     }
-    sqlx::query("INSERT INTO categories (name, parent_id) VALUES (?, NULL)")
-        .bind(name)
-        .execute(pool)
-        .await
-        .map_err(|e| format!("DB insert error: {}", e))?;
+    let id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO categories (name, parent_id) VALUES (?, NULL) RETURNING id",
+    )
+    .bind(name)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("DB insert error: {}", e))?;
     *created += 1;
-    sqlx::query_scalar::<_, i64>("SELECT last_insert_rowid()")
-        .fetch_one(pool)
-        .await
-        .map_err(|e| format!("DB error: {}", e))
+    Ok(id)
 }
 
 async fn get_or_create_child(
@@ -145,17 +145,16 @@ async fn get_or_create_child(
     {
         return Ok(id);
     }
-    sqlx::query("INSERT INTO categories (name, parent_id) VALUES (?, ?)")
-        .bind(name)
-        .bind(parent_id)
-        .execute(pool)
-        .await
-        .map_err(|e| format!("DB insert error: {}", e))?;
+    let id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO categories (name, parent_id) VALUES (?, ?) RETURNING id",
+    )
+    .bind(name)
+    .bind(parent_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("DB insert error: {}", e))?;
     *created += 1;
-    sqlx::query_scalar::<_, i64>("SELECT last_insert_rowid()")
-        .fetch_one(pool)
-        .await
-        .map_err(|e| format!("DB error: {}", e))
+    Ok(id)
 }
 
 // Returns the category_id for a Category/Subcategory pair, creating rows as

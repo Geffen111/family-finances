@@ -102,6 +102,19 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   a reply that fails to parse counts as a failed attempt and the fallback model gets a go;
   it returns an `Answer<T>` carrying which model answered. Don't send a model id directly
   except via `chat_once`.
+- **Reading back a row you just inserted:** take the id from the INSERT itself
+  (`... RETURNING id` + `fetch_one`), never from a follow-up
+  `SELECT last_insert_rowid()`. The pool holds **4 connections** and hands out
+  whichever is free, so that second statement can run on a connection that has
+  inserted nothing and answer `0` — the read-back then fails with *"no rows
+  returned by a query that expected to return at least one row"*. It only bites
+  once the pool has opened a second connection, which is why it looks
+  intermittent and why nothing caught it for so long. A test that wants to catch
+  it needs a *shared* in-memory DB
+  (`sqlite:file:<name>?mode=memory&cache=shared`) with `min_connections(2)`:
+  plain `sqlite::memory:` gives every connection its own database, which hides
+  exactly this. (`result.last_insert_rowid()` off the insert's own `QueryResult`
+  is fine — same statement, same connection.)
 - **Settings file:** `commands/settings.rs` reads/writes `settings.json` through
   `load`/`read_str`/`write_str` — add a setting with a pair of commands over those, not
   another read-modify-write copy. `read_str` treats an empty string as unset.

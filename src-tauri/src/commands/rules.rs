@@ -67,23 +67,22 @@ pub async fn create_category_rule(
     if pattern.trim().is_empty() {
         return Err("Pattern cannot be empty.".to_string());
     }
-    sqlx::query(
+    // The id comes back from the INSERT itself. A follow-up
+    // `SELECT last_insert_rowid()` is not safe here: the pool holds four
+    // connections and hands out whichever is free, so that second statement
+    // can run on a connection that has inserted nothing and answer 0.
+    let id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO category_rules (match_type, pattern, category_id, priority, active) \
-         VALUES (?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?) RETURNING id",
     )
     .bind(&match_type)
     .bind(pattern.trim())
     .bind(category_id)
     .bind(priority.unwrap_or(0))
     .bind(active.unwrap_or(true))
-    .execute(&*pool)
+    .fetch_one(&*pool)
     .await
     .map_err(|e| format!("DB insert error: {}", e))?;
-
-    let id = sqlx::query_scalar::<_, i64>("SELECT last_insert_rowid()")
-        .fetch_one(&*pool)
-        .await
-        .map_err(|e| format!("DB error: {}", e))?;
 
     let row = sqlx::query_as::<_, RuleRow>(&format!("{SELECT_RULES} WHERE r.id = ?"))
         .bind(id)
