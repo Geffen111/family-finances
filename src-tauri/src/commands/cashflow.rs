@@ -95,6 +95,34 @@ pub async fn get_upcoming_bills(
     Ok(bills)
 }
 
+/// The "Cash & accounts" figure: the latest known balance of every asset
+/// account, summed, with the date it is current as at. Liability accounts and
+/// balance-less ones (the credit card's CSVs carry no balance) are skipped.
+///
+/// One definition, three users: the dashboard's net-worth band, "safe to
+/// spend" below, and the forecast's cash projection all have to agree, or the
+/// same number appears differently on three pages.
+pub async fn liquid_assets(pool: &SqlitePool) -> Result<(f64, Option<String>), String> {
+    let row = sqlx::query_as::<_, (Option<f64>, Option<String>)>(
+        "SELECT CAST(SUM(latest) AS REAL), MAX(as_at) FROM (
+            SELECT
+              (SELECT t.balance FROM transactions t
+                 WHERE t.account_id = a.id AND t.balance IS NOT NULL
+                 ORDER BY t.date DESC, t.id DESC LIMIT 1) AS latest,
+              (SELECT t.date FROM transactions t
+                 WHERE t.account_id = a.id AND t.balance IS NOT NULL
+                 ORDER BY t.date DESC, t.id DESC LIMIT 1) AS as_at
+            FROM accounts a
+            WHERE a.type = 'asset'
+         ) WHERE latest IS NOT NULL",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("DB query error: {}", e))?;
+
+    Ok((row.0.unwrap_or(0.0), row.1))
+}
+
 /// Liquid balance (latest balance of each asset account) minus bills due within
 /// the horizon.
 #[tauri::command]
@@ -104,23 +132,7 @@ pub async fn get_safe_to_spend(
 ) -> Result<SafeToSpend, String> {
     let horizon_days = days.unwrap_or(30).clamp(1, 365);
 
-    // Latest known balance per asset account. Liability accounts and
-    // balance-less accounts (e.g. the credit card) are skipped.
-    let liquid = sqlx::query_scalar::<_, Option<f64>>(
-        "SELECT CAST(SUM(latest) AS REAL) FROM (
-            SELECT (
-                SELECT t.balance FROM transactions t
-                WHERE t.account_id = a.id AND t.balance IS NOT NULL
-                ORDER BY t.date DESC, t.id DESC LIMIT 1
-            ) AS latest
-            FROM accounts a
-            WHERE a.type = 'asset'
-         ) WHERE latest IS NOT NULL",
-    )
-    .fetch_one(&*pool)
-    .await
-    .map_err(|e| format!("DB query error: {}", e))?
-    .unwrap_or(0.0);
+    let (liquid, _as_at) = liquid_assets(&pool).await?;
 
     let bills = get_upcoming_bills(pool, Some(horizon_days)).await?;
     let upcoming_total: f64 = bills.iter().map(|b| b.amount).sum();

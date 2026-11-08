@@ -75,6 +75,7 @@
     projected_income: number;
     projected_expenses: number;
     projected_net: number;
+    projected_cash: number;
     categories: ForecastCategoryAmount[];
   }
 
@@ -89,6 +90,8 @@
     scenario_id: number;
     months: ForecastMonth[];
     totals: ForecastTotals;
+    opening_cash: number;
+    cash_as_at: string | null;
   }
 
   interface ForecastComparison {
@@ -173,6 +176,7 @@
   function fmt(val: number): string { return currencyFormat.format(val); }
 
   let lineChart: import("chart.js").Chart<"line"> | null = null;
+  let cashChart: import("chart.js").Chart<"line"> | null = null;
 
   // Resolve Hearth theme tokens to concrete colors for Chart.js (which can't read var()).
   function themeVar(name: string, fallback = ""): string {
@@ -545,6 +549,97 @@
     })();
   });
 
+  // Projected "Cash & accounts": where each scenario leaves the bank balance,
+  // running from today's balance. Its own chart rather than a second axis on
+  // the net chart -- a balance in the tens of thousands against a monthly net
+  // in the low thousands would flatten the net lines to a straight line.
+  let cashDatasets = $derived.by<{ labels: string[]; datasets: any[] } | null>(() => {
+    if (!forecastResult) return null;
+    void $darkMode;
+    const series = chartSeries();
+    const opening = forecastResult.base.opening_cash;
+    // Month 0 is today's actual balance, so the line starts from a real figure
+    // instead of appearing to jump in its first step.
+    const labels = ["Now", ...forecastResult.base.months.map((m) => m.label)];
+    const ds: any[] = [
+      {
+        label: "Baseline",
+        data: [opening, ...forecastResult.base.months.map((m) => m.projected_cash)],
+        borderColor: themeVar("--text-muted", "#a89f90"),
+        backgroundColor: "transparent",
+        borderWidth: 2,
+        borderDash: [6, 3],
+        pointRadius: 2,
+        tension: 0.3,
+        fill: false,
+      },
+    ];
+    forecastResult.scenarios.forEach((sc, i) => {
+      ds.push({
+        label: sc.scenario_name,
+        data: [opening, ...sc.months.map((m) => m.projected_cash)],
+        borderColor: series[i % series.length],
+        backgroundColor: "transparent",
+        borderWidth: 2.5,
+        pointRadius: 3,
+        tension: 0.3,
+        fill: false,
+      });
+    });
+    return { labels, datasets: ds };
+  });
+
+  // Does any line dip below zero? Then the axis has to show it -- clamping at
+  // zero would hide the month the money runs out, which is the one thing this
+  // chart exists to show.
+  let cashGoesNegative = $derived.by(() => {
+    if (!forecastResult) return false;
+    const all = [forecastResult.base, ...forecastResult.scenarios];
+    return all.some((r) => r.months.some((m) => m.projected_cash < 0));
+  });
+
+  $effect(() => {
+    if (!forecastResult || forecastLoading || !cashDatasets) return;
+    const negative = cashGoesNegative;
+    (async () => {
+      const { default: Chart } = await import("chart.js/auto");
+      const canvas = document.getElementById("cashChart") as HTMLCanvasElement | null;
+      if (!canvas) return;
+      if (cashChart) cashChart.destroy();
+      cashChart = new Chart(canvas, {
+        type: "line",
+        data: cashDatasets,
+        options: {
+          responsive: true,
+          maintainAspectRatio: true,
+          interaction: { intersect: false, mode: "index" },
+          scales: {
+            y: {
+              beginAtZero: !negative,
+              border: { display: false },
+              grid: {
+                color: (ctx: any) =>
+                  ctx.tick?.value === 0
+                    ? themeVar("--text-muted", "#a89f90")
+                    : themeVar("--border-color", "#ece0cc"),
+              },
+              ticks: { color: themeVar("--text-muted", "#a89f90"), callback: (v: any) => fmt(v) },
+            },
+            x: { border: { display: false }, grid: { display: false }, ticks: { color: themeVar("--text-muted", "#a89f90") } },
+          },
+          plugins: {
+            legend: { position: "bottom", labels: { color: themeVar("--text-secondary", "#7b7468"), usePointStyle: true, pointStyle: "circle", boxWidth: 8 } },
+            tooltip: {
+              callbacks: {
+                label: (ctx: any) => `${ctx.dataset.label}: ${fmt(ctx.parsed.y ?? ctx.parsed)}`,
+              },
+            },
+          },
+        },
+      });
+    })();
+  });
+
   let summaryTable = $derived.by(() => {
     if (!forecastResult) return [];
     const rows: { scenario: string; income: string; expenses: string; net: string }[] = [];
@@ -680,6 +775,7 @@
     loadLiabilities();
     return () => {
       if (lineChart) lineChart.destroy();
+      if (cashChart) cashChart.destroy();
     };
   });
 </script>
@@ -973,6 +1069,25 @@
       <div class="chart-card">
         <h3>Net Projection Comparison</h3>
         <div class="chart-wrap"><canvas id="forecastChart"></canvas></div>
+      </div>
+
+      <div class="chart-card">
+        <h3>
+          Projected Cash &amp; Accounts
+          <span class="chart-note">
+            from {fmt(forecastResult.base.opening_cash)}
+            {#if forecastResult.base.cash_as_at}
+              as at {formatDate(forecastResult.base.cash_as_at)}
+            {/if}
+          </span>
+        </h3>
+        <div class="chart-wrap"><canvas id="cashChart"></canvas></div>
+        {#if cashGoesNegative}
+          <p class="cash-warn">
+            At least one projection runs the balance below zero within
+            {forecastResult.months_ahead} months.
+          </p>
+        {/if}
       </div>
 
       <div class="summary-table-wrap">
@@ -1357,6 +1472,17 @@
   .chart-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-card); padding: 1.25rem; margin-bottom: 1rem; box-shadow: var(--app-shadow); }
   .chart-wrap { position: relative; width: 100%; max-height: 400px; display: flex; justify-content: center; }
   .chart-wrap canvas { max-width: 100%; max-height: 400px; }
+  .chart-note {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin-left: 0.4rem;
+  }
+  .cash-warn {
+    margin: 0.75rem 0 0;
+    font-size: 0.8rem;
+    color: var(--neg, #c77a5a);
+  }
 
   .summary-table-wrap { margin-bottom: 1rem; }
   .summary-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }

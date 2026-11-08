@@ -13,6 +13,8 @@ pub async fn calculate_forecast(
     defaults: &ScenarioDefault,
     excluded_category_ids: &HashSet<i64>,
     months_ahead: i64,
+    opening_cash: f64,
+    cash_as_at: Option<String>,
 ) -> Result<ForecastResult, String> {
     let baselines = compute_baselines(pool, &scenario.base_start_date, &scenario.base_end_date).await?;
 
@@ -29,6 +31,11 @@ pub async fn calculate_forecast(
         total_projected_expenses: 0.0,
         total_projected_net: 0.0,
     };
+
+    // Runs forward from today's cash position, one month at a time, so the
+    // line answers "where does this scenario leave the bank balance" rather
+    // than just "what is each month's net".
+    let mut running_cash = opening_cash;
 
     let adj_map: HashMap<i64, &ScenarioAdjustment> =
         adjustments.iter().map(|a| (a.category_id, a)).collect();
@@ -81,6 +88,7 @@ pub async fn calculate_forecast(
         }
 
         let projected_net = projected_income - projected_expenses;
+        running_cash += projected_net;
 
         totals.total_projected_income += projected_income;
         totals.total_projected_expenses += projected_expenses;
@@ -92,6 +100,7 @@ pub async fn calculate_forecast(
             projected_income,
             projected_expenses,
             projected_net,
+            projected_cash: running_cash,
             categories,
         });
     }
@@ -101,6 +110,8 @@ pub async fn calculate_forecast(
         scenario_id: scenario.id,
         months,
         totals,
+        opening_cash,
+        cash_as_at,
     })
 }
 
@@ -118,8 +129,22 @@ pub async fn compare_scenarios(
         income_growth_pct: 0.0,
     };
 
+    // Resolved once: the baseline and every scenario have to project from the
+    // same opening balance, or the lines aren't comparable.
+    let (opening_cash, cash_as_at) = crate::commands::cashflow::liquid_assets(pool).await?;
+
     let base_excluded = HashSet::new();
-    let base = calculate_forecast(pool, &base_scenario, &base_adjustments, &base_defaults, &base_excluded, months_ahead).await?;
+    let base = calculate_forecast(
+        pool,
+        &base_scenario,
+        &base_adjustments,
+        &base_defaults,
+        &base_excluded,
+        months_ahead,
+        opening_cash,
+        cash_as_at.clone(),
+    )
+    .await?;
 
     let mut scenarios = Vec::new();
     for sid in scenario_ids {
@@ -162,7 +187,19 @@ pub async fn compare_scenarios(
         .into_iter()
         .collect();
 
-        scenarios.push(calculate_forecast(pool, &scenario, &adjustments, &defaults, &excluded, months_ahead).await?);
+        scenarios.push(
+            calculate_forecast(
+                pool,
+                &scenario,
+                &adjustments,
+                &defaults,
+                &excluded,
+                months_ahead,
+                opening_cash,
+                cash_as_at.clone(),
+            )
+            .await?,
+        );
     }
 
     Ok(ForecastComparison {
@@ -440,6 +477,115 @@ mod tests {
         // 181 days is 5.95 average-length months, so within ~1% of the flat figure.
         assert!((groceries - 600.0).abs() < 6.0, "groceries averaged {groceries}");
         assert!((salary - 5000.0).abs() < 50.0, "salary averaged {salary}");
+    }
+
+    /// The cash line is the opening balance plus a running sum of each
+    /// month's net -- not the net repeated, and not reset each month.
+    #[tokio::test]
+    async fn cash_projection_accumulates_from_the_opening_balance() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        for sql in [
+            "INSERT INTO accounts (id, name) VALUES (1, 'Everyday')",
+            "INSERT INTO categories (id, name) VALUES (1, 'Food'), (3, 'Income'), (5, 'Other')",
+            "INSERT INTO categories (id, name, parent_id) VALUES (2, 'Groceries', 1), (4, 'Salary', 3)",
+            "INSERT INTO transactions (account_id, category_id, date, description, debit)
+             VALUES (1, 5, '2025-06-01', 'older', 10), (1, 5, '2026-12-31', 'newer', 10)",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+        // $5,000 in and $600 out every month: a net of $4,400.
+        for m in 1..=6 {
+            sqlx::query(
+                "INSERT INTO transactions (account_id, category_id, date, description, debit, credit)
+                 VALUES (1, 2, ?, 'Coles', 600, 0), (1, 4, ?, 'Pay', 0, 5000)",
+            )
+            .bind(format!("2026-{m:02}-15"))
+            .bind(format!("2026-{m:02}-10"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let scenario = Scenario {
+            id: 1,
+            name: "Test".to_string(),
+            description: None,
+            horizon: String::new(),
+            base_start_date: "2026-01-01".to_string(),
+            base_end_date: "2026-06-30".to_string(),
+            created_at: String::new(),
+        };
+        let defaults = ScenarioDefault {
+            id: 0,
+            scenario_id: 1,
+            default_adjustment_pct: 0.0,
+            income_growth_pct: 0.0,
+        };
+
+        let result = calculate_forecast(
+            &pool,
+            &scenario,
+            &[],
+            &defaults,
+            &HashSet::new(),
+            3,
+            10_000.0,
+            Some("2026-06-30".to_string()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.opening_cash, 10_000.0);
+        assert_eq!(result.months.len(), 3);
+        let net = result.months[0].projected_net;
+        assert!((net - 4400.0).abs() < 60.0, "monthly net was {net}");
+        // Each month must sit one net above the last, starting from the opening
+        // balance -- that is the whole point of the line.
+        let mut expected = 10_000.0;
+        for (i, m) in result.months.iter().enumerate() {
+            expected += m.projected_net;
+            assert!(
+                (m.projected_cash - expected).abs() < 0.01,
+                "month {i} cash was {} not {expected}",
+                m.projected_cash
+            );
+        }
+        assert!(result.months[2].projected_cash > result.months[0].projected_cash);
+    }
+
+    /// "Cash & accounts" is the latest balance of each *asset* account:
+    /// liabilities and accounts whose CSVs carry no balance are left out.
+    #[tokio::test]
+    async fn liquid_assets_sums_the_latest_balance_per_asset_account() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        for sql in [
+            "INSERT INTO accounts (id, name, type) VALUES
+               (1, 'Savings', 'asset'), (2, 'Everyday', 'asset'),
+               (3, 'Credit Card', 'asset'), (4, 'Home Loan', 'liability')",
+            // Savings: later row wins. Everyday: one row.
+            "INSERT INTO transactions (account_id, date, description, debit, balance) VALUES
+               (1, '2026-05-01', 'x', 1, 500),
+               (1, '2026-06-01', 'x', 1, 900),
+               (2, '2026-06-02', 'x', 1, 100),
+               (3, '2026-06-03', 'x', 1, NULL),
+               (4, '2026-06-04', 'x', 1, 250000)",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+
+        let (total, as_at) = crate::commands::cashflow::liquid_assets(&pool).await.unwrap();
+        assert_eq!(total, 1000.0, "900 + 100, ignoring the loan and the card");
+        assert_eq!(as_at.as_deref(), Some("2026-06-02"));
     }
 
     #[tokio::test]

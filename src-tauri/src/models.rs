@@ -214,6 +214,12 @@ pub struct ForecastResult {
     pub scenario_id: i64,
     pub months: Vec<ForecastMonth>,
     pub totals: ForecastTotals,
+    /// The "Cash & accounts" balance the projection starts from, and the date
+    /// that figure is current as at (the latest dated balance in the imported
+    /// data). Same figure as the dashboard's net-worth band -- see
+    /// `commands::cashflow::liquid_assets`.
+    pub opening_cash: f64,
+    pub cash_as_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -223,6 +229,9 @@ pub struct ForecastMonth {
     pub projected_income: f64,
     pub projected_expenses: f64,
     pub projected_net: f64,
+    /// Projected "Cash & accounts" balance at the end of this month: the
+    /// opening balance plus every month's net up to and including this one.
+    pub projected_cash: f64,
     pub categories: Vec<ForecastCategoryAmount>,
 }
 
