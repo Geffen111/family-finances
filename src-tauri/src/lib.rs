@@ -60,6 +60,7 @@ pub fn run() {
             commands::recurring::find_duplicate_costs,
             commands::payments::find_payment_matches,
             commands::payments::confirm_payment,
+            commands::recurring::set_paid_on,
             commands::goals::list_savings_goals,
             commands::goals::create_savings_goal,
             commands::goals::update_savings_goal,

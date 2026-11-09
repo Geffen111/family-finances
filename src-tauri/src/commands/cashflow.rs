@@ -58,6 +58,10 @@ pub(crate) fn advance(date: NaiveDate, frequency: &str) -> NaiveDate {
 /// Every dated occurrence of the active upcoming expenses that falls in
 /// `from..=to`, expanding each one across its cadence.
 ///
+/// A one-off that has been marked paid is dropped: paying for the school camp
+/// three days early must not leave the camp in the projection as well as the
+/// payment in the transactions. Only one-offs ever carry `paid_on`.
+///
 /// A due date before `from` is rolled forward to the first occurrence inside
 /// the window, so a cost whose date hasn't been touched for months still lands
 /// where it belongs. A cost with an `end_date` stops there — a car loan has a
@@ -85,7 +89,7 @@ pub async fn expand_bills(
         "SELECT r.name, r.amount, r.frequency, r.next_due_date, r.end_date, r.category_id, c.name, r.kind \
          FROM recurring_costs r \
          LEFT JOIN categories c ON r.category_id = c.id \
-         WHERE r.active = 1 AND r.next_due_date IS NOT NULL",
+         WHERE r.active = 1 AND r.next_due_date IS NOT NULL AND r.paid_on IS NULL",
     )
     .fetch_all(pool)
     .await
@@ -221,6 +225,29 @@ mod tests {
             .unwrap();
         sqlx::migrate!("./migrations").run(&pool).await.unwrap();
         pool
+    }
+
+    /// A one-off marked paid is out of the projection: the money has already
+    /// moved, and leaving it in would count it twice -- once as the
+    /// transaction, once as the bill.
+    #[tokio::test]
+    async fn a_one_off_marked_paid_is_not_projected() {
+        let pool = pool().await;
+        sqlx::query(
+            "INSERT INTO recurring_costs (name, amount, frequency, next_due_date, paid_on)              VALUES ('School Camp', 320.0, 'One-off', '2027-03-10', '2027-03-07')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let bills = expand_bills(
+            &pool,
+            NaiveDate::from_ymd_opt(2027, 3, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2027, 4, 1).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(bills.is_empty(), "a paid one-off should be gone: {bills:#?}");
     }
 
     async fn add(

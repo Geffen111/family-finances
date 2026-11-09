@@ -15,6 +15,9 @@
     // The stored date rolled forward past any cycles that have already
     // happened — what to show, since nothing rewrites next_due_date on import.
     next_occurrence: string | null;
+    // When a one-off actually happened. Null means not yet -- and once its
+    // date has passed, that means overdue, not done.
+    paid_on: string | null;
     end_date: string | null;
     active: boolean;
     notes: string | null;
@@ -55,6 +58,7 @@
     tx_amount: number;
     matched_on_name: boolean;
     new_due_date: string;
+    is_one_off: boolean;
   }
 
   // Items that look like one thing tracked more than once. The backend
@@ -160,8 +164,19 @@
     return c.end_date != null && c.end_date < todayIso();
   }
   function isSpent(c: RecurringCost): boolean {
-    // A one-off whose date has passed has happened; it is history, not a plan.
-    return c.frequency === ONE_OFF && c.next_due_date != null && c.next_due_date < todayIso();
+    // Recorded as paid, rather than assumed from the date having passed --
+    // a bill nobody paid doesn't stop being owed because the day went by.
+    return c.frequency === ONE_OFF && c.paid_on != null;
+  }
+  // Due, and nothing has been matched against it.
+  function isOverdue(c: RecurringCost): boolean {
+    return (
+      c.active &&
+      c.frequency === ONE_OFF &&
+      c.paid_on == null &&
+      c.next_due_date != null &&
+      c.next_due_date < todayIso()
+    );
   }
   // Still expected to cost something from here on.
   function isLive(c: RecurringCost): boolean {
@@ -351,6 +366,20 @@
     }
   }
 
+  // For the payment no import will ever match: cash, or someone else paying.
+  async function togglePaid(c: RecurringCost) {
+    try {
+      await invoke("set_paid_on", {
+        id: c.id,
+        paidOn: c.paid_on == null ? (c.next_due_date ?? todayIso()) : null,
+      });
+      await load();
+      showToast(c.paid_on == null ? `"${c.name}" marked as paid.` : `"${c.name}" back on the list.`, "success");
+    } catch (e) {
+      showToast(String(e), "error");
+    }
+  }
+
   async function confirmPayment(m: PaymentMatch) {
     confirming = m.cost_id;
     try {
@@ -446,6 +475,11 @@
           <div class="card-top">
             <span class="card-name">{c.name}</span>
             <div class="card-actions">
+              {#if c.frequency === ONE_OFF}
+                <button class="btn btn-sm" onclick={() => togglePaid(c)}>
+                  {c.paid_on == null ? "Mark paid" : "Not paid"}
+                </button>
+              {/if}
               <button class="btn btn-sm" onclick={() => openEdit(c)}>Edit</button>
               <button class="btn btn-sm btn-danger" onclick={() => openDelete(c)}>Delete</button>
             </div>
@@ -464,7 +498,8 @@
             {#if c.category_name}<span class="chip">{c.category_name}</span>{/if}
             {#if !c.active}<span class="chip chip-muted">Paused</span>{/if}
             {#if hasEnded(c)}<span class="chip chip-muted">Ended {formatDate(c.end_date)}</span>{/if}
-            {#if isSpent(c)}<span class="chip chip-muted">{c.kind === INCOME ? "Received" : "Paid"}</span>{/if}
+            {#if isSpent(c)}<span class="chip chip-muted">{c.kind === INCOME ? "Received" : "Paid"} {formatDate(c.paid_on)}</span>{/if}
+            {#if isOverdue(c)}<span class="chip chip-overdue">{c.kind === INCOME ? "Not received yet" : "Not paid yet"}</span>{/if}
             {#if c.next_occurrence ?? c.next_due_date}
               <span class="card-due">
                 {c.frequency === ONE_OFF ? "due" : "next"}
@@ -586,9 +621,10 @@
       <h2>Payments that look like they have landed</h2>
       <p class="modal-intro">
         Importing a statement doesn't move a due date on its own — a wrong match would
-        shift a whole schedule. Confirm one and its next date moves on by a cycle from
-        where it was, so a bill that is always a few days late keeps its own rhythm
-        instead of drifting later every month.
+        shift a whole schedule. Confirm a repeating one and its next date moves on by a
+        cycle from where it was, so a bill that is always a few days late keeps its own
+        rhythm instead of drifting later every month. A one-off has no next date, so it
+        is recorded as paid on the day it happened.
       </p>
       <div class="scan-list">
         {#each paymentMatches as m (m.cost_id)}
@@ -603,7 +639,7 @@
               </span>
               <span class="scan-meta">
                 found {formatDate(m.tx_date)} · {m.tx_description} · {fmt(m.tx_amount)}
-                → next {formatDate(m.new_due_date)}
+                → {m.is_one_off ? `mark paid ${formatDate(m.new_due_date)}` : `next ${formatDate(m.new_due_date)}`}
               </span>
             </div>
             <button
@@ -704,6 +740,7 @@
   .per { font-size: 0.7rem; font-weight: 500; color: var(--text-secondary); }
   .chip { font-size: 0.72rem; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 999px; padding: 0.1rem 0.5rem; }
   .chip-muted { color: var(--text-muted); }
+  .chip-overdue { color: var(--neg); border-color: var(--neg); }
   /* Income reads as a different kind of row at a glance, without relying on
      the sign alone. */
   .card-income .card-amount, .card-income .card-monthly { color: var(--pos); }

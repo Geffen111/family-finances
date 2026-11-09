@@ -88,6 +88,7 @@
     category_id: number | null;
     category_name: string | null;
     next_due_date: string | null;
+    paid_on: string | null;
     end_date: string | null;
     active: boolean;
     notes: string | null;
@@ -664,14 +665,16 @@
   });
 
   // Only what is still expected to cost something: a finished car loan or a
-  // one-off that has already been paid shouldn't sit in a per-month figure.
+  // one-off that has been paid shouldn't sit in a per-month figure.
   // (A one-off's monthly_cost is 0, so they fall out of the sum anyway.)
+  // Paid, not merely past: a one-off nobody has paid is still owed, and the
+  // count on this card should say so.
   let liveRecurring = $derived(
     recurring.filter((r) => {
       const today = new Date().toLocaleDateString("en-CA");
       if (!r.active) return false;
       if (r.end_date != null && r.end_date < today) return false;
-      if (r.frequency === "One-off" && r.next_due_date != null && r.next_due_date < today) return false;
+      if (r.frequency === "One-off" && r.paid_on != null) return false;
       return true;
     }),
   );

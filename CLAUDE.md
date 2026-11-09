@@ -210,6 +210,15 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   cadence + amount, **letting the dates differ** — the pair this finds was added
   twice and only one copy has rolled forward. It only reports; the page shows a
   "Review" notice and you delete the spare.
+- **`recurring_costs.paid_on`** (migration 19) is how a **one-off** is finished: it has
+  no next date to move, so confirming a payment records the day it happened. Being
+  paid is recorded, never inferred from the date having passed — a bill nobody paid
+  doesn't stop being owed because the day went by, so a dated one-off with no
+  `paid_on` reads "Not paid yet" instead of silently "Paid". `expand_bills` drops any
+  cost with `paid_on` set (only one-offs ever carry it), or paying for the camp early
+  would leave the camp in the projection *and* the payment in the transactions.
+  `set_paid_on` marks one by hand, for the payment no import will match (cash, or
+  someone else paying it).
 - **Matching payments to bills** (`commands/payments.rs`) is how a due date moves:
   `find_matches` looks at every occurrence of an active, non-one-off item from its
   stored date up to today, and offers the **latest** transaction that could be it, so

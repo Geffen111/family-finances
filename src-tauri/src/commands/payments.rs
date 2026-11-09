@@ -16,7 +16,14 @@ use tauri::State;
 /// How far either side of the expected date a payment can land and still be
 /// that payment: half a cycle, so a fortnightly item can't claim the next
 /// one's transaction, capped at ten days for the long cadences.
+///
+/// A one-off has no cycle to halve and its date is usually a guess at
+/// something that hasn't happened yet ("school camp, some time in March"), so
+/// it gets the full ten days either way.
 fn window_days(frequency: &str) -> i64 {
+    if frequency == ONE_OFF {
+        return ONE_OFF_WINDOW_DAYS;
+    }
     let per_month = payments_per_month(frequency);
     if per_month <= 0.0 {
         return 0;
@@ -24,6 +31,8 @@ fn window_days(frequency: &str) -> i64 {
     let cycle = 30.44 / per_month;
     ((cycle / 2.0).floor() as i64).clamp(2, 10)
 }
+
+const ONE_OFF_WINDOW_DAYS: i64 = 10;
 
 /// An amount that matches on its own has to match closely — it is the only
 /// evidence there is. Where the merchant line agrees as well, the amount is
@@ -46,8 +55,12 @@ pub struct PaymentMatch {
     pub tx_amount: f64,
     /// True when the merchant line agreed, not just the amount and the date.
     pub matched_on_name: bool,
-    /// What confirming would set the next due date to.
+    /// What confirming would set the next due date to. For a one-off there is
+    /// no next date, so this is the date it would be recorded as paid on.
     pub new_due_date: String,
+    /// A one-off is marked as happened rather than moved on, so the dialog
+    /// says "mark paid" instead of promising a next date.
+    pub is_one_off: bool,
 }
 
 type TxRow = (i64, String, String, f64, f64);
@@ -56,17 +69,16 @@ type TxRow = (i64, String, String, f64, f64);
 ///
 /// Only items whose stored date has been overtaken are considered — that is
 /// the whole point, since nothing rewrites `next_due_date` when a payment
-/// lands. One-offs are left alone: there is no next date to move, and the
-/// page already reads a past one as done.
+/// lands. A one-off is included until it has been marked paid: it has one
+/// occurrence and no next date, so confirming records the date it happened.
 pub(crate) async fn find_matches(pool: &SqlitePool) -> Result<Vec<PaymentMatch>, String> {
     type CostRow = (i64, String, f64, String, String, Option<String>, Option<String>);
     let costs = sqlx::query_as::<_, CostRow>(
         "SELECT id, name, amount, frequency, kind, next_due_date, end_date \
          FROM recurring_costs \
-         WHERE active = 1 AND next_due_date IS NOT NULL AND frequency <> ? \
+         WHERE active = 1 AND next_due_date IS NOT NULL AND paid_on IS NULL \
          ORDER BY name COLLATE NOCASE",
     )
-    .bind(ONE_OFF)
     .fetch_all(pool)
     .await
     .map_err(|e| format!("DB query error: {}", e))?;
@@ -118,10 +130,15 @@ pub(crate) async fn find_matches(pool: &SqlitePool) -> Result<Vec<PaymentMatch>,
         // ones that should already have been paid. The *latest* match wins, so
         // a date left alone for months catches up in one click rather than
         // asking for a confirmation per cycle.
+        let one_off = frequency == ONE_OFF;
         let mut best: Option<(NaiveDate, &TxRow, bool)> = None;
         let mut occurrence = stored;
         let mut guard = 0;
-        while occurrence <= today && guard < 400 {
+        // A one-off is one occurrence, looked at whether or not its date has
+        // arrived — paying for the camp three days early is still paying for
+        // the camp. A repeating item only looks at occurrences already due, so
+        // next month's bill can't be "confirmed" by something today.
+        while (one_off || occurrence <= today) && guard < 400 {
             if ends.is_some_and(|e| occurrence > e) {
                 break;
             }
@@ -161,6 +178,9 @@ pub(crate) async fn find_matches(pool: &SqlitePool) -> Result<Vec<PaymentMatch>,
                     best = Some((occurrence, tx, named));
                 }
             }
+            if one_off {
+                break;
+            }
             occurrence = advance(occurrence, &frequency);
             guard += 1;
         }
@@ -184,9 +204,14 @@ pub(crate) async fn find_matches(pool: &SqlitePool) -> Result<Vec<PaymentMatch>,
             tx_description: tx_desc.split_whitespace().collect::<Vec<_>>().join(" "),
             tx_amount: if is_income { *credit } else { *debit },
             matched_on_name: named,
-            new_due_date: roll_past(stored, &frequency, tx_date)
-                .format("%Y-%m-%d")
-                .to_string(),
+            new_due_date: if one_off {
+                tx_date_str.clone()
+            } else {
+                roll_past(stored, &frequency, tx_date)
+                    .format("%Y-%m-%d")
+                    .to_string()
+            },
+            is_one_off: one_off,
         });
     }
 
@@ -229,11 +254,6 @@ pub(crate) async fn confirm(
             .map_err(|e| format!("DB query error: {}", e))?
             .ok_or_else(|| format!("Upcoming item {} not found", cost_id))?;
 
-    let stored = due
-        .as_deref()
-        .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
-        .ok_or_else(|| "That item has no due date to move.".to_string())?;
-
     let paid_str: String = sqlx::query_scalar("SELECT date FROM transactions WHERE id = ?")
         .bind(transaction_id)
         .fetch_optional(pool)
@@ -242,6 +262,24 @@ pub(crate) async fn confirm(
         .ok_or_else(|| format!("Transaction {} not found", transaction_id))?;
     let paid = NaiveDate::parse_from_str(&paid_str, "%Y-%m-%d")
         .map_err(|e| format!("Bad transaction date: {}", e))?;
+
+    if frequency == ONE_OFF {
+        // Nothing to move: record the date it happened on. The stored date
+        // stays as the date it was planned for, which is worth keeping — it
+        // is what the forecast placed it on.
+        sqlx::query("UPDATE recurring_costs SET paid_on = ? WHERE id = ?")
+            .bind(&paid_str)
+            .bind(cost_id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("DB update error: {}", e))?;
+        return crate::commands::recurring::fetch_cost(pool, cost_id).await;
+    }
+
+    let stored = due
+        .as_deref()
+        .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+        .ok_or_else(|| "That item has no due date to move.".to_string())?;
 
     let next = roll_past(stored, &frequency, paid);
     sqlx::query("UPDATE recurring_costs SET next_due_date = ? WHERE id = ?")
@@ -379,6 +417,52 @@ mod tests {
         let matches = find_matches(&pool).await.unwrap();
         assert_eq!(matches.len(), 1);
         assert!(!matches[0].matched_on_name);
+    }
+
+    /// A one-off has no next date, so confirming records the day it happened
+    /// — and then it stops being offered.
+    #[tokio::test]
+    async fn a_one_off_is_marked_paid_rather_than_moved() {
+        let pool = pool().await;
+        let id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO recurring_costs (name, amount, frequency, next_due_date) \
+             VALUES ('School Camp', 320.00, 'One-off', ?) RETURNING id",
+        )
+        .bind(days_ago(4))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        spend(&pool, "School Camp Levy", 320.00, &days_ago(2)).await;
+
+        let matches = find_matches(&pool).await.unwrap();
+        assert_eq!(matches.len(), 1, "expected the camp: {matches:#?}");
+        assert!(matches[0].is_one_off);
+
+        let updated = confirm(&pool, id, matches[0].transaction_id).await.unwrap();
+        assert_eq!(updated.paid_on.as_deref(), Some(days_ago(2).as_str()));
+        // The planned date is left alone: it is where the forecast put it.
+        assert_eq!(updated.next_due_date.as_deref(), Some(days_ago(4).as_str()));
+        assert!(find_matches(&pool).await.unwrap().is_empty());
+    }
+
+    /// Paying for something a few days early is still paying for it, so a
+    /// one-off is matched before its date as well as after.
+    #[tokio::test]
+    async fn a_one_off_paid_early_is_still_matched() {
+        let pool = pool().await;
+        let due = (chrono::Local::now().naive_local().date() + chrono::Duration::days(6))
+            .format("%Y-%m-%d")
+            .to_string();
+        sqlx::query("INSERT INTO recurring_costs (name, amount, frequency, next_due_date) \
+                     VALUES ('Car Service', 540.00, 'One-off', ?)")
+            .bind(&due)
+            .execute(&pool)
+            .await
+            .unwrap();
+        spend(&pool, "Car Service", 540.00, &days_ago(1)).await;
+
+        let matches = find_matches(&pool).await.unwrap();
+        assert_eq!(matches.len(), 1, "an early payment still counts: {matches:#?}");
     }
 
     /// A payment that hasn't happened yet isn't a payment. Only occurrences

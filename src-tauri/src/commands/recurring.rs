@@ -440,6 +440,7 @@ type RecurringRow = (
     Option<i64>,    // category_id
     Option<String>, // category_name
     Option<String>, // next_due_date
+    Option<String>, // paid_on
     Option<String>, // end_date
     bool,           // active
     Option<String>, // notes
@@ -477,7 +478,7 @@ fn next_occurrence_of(
 }
 
 fn row_to_cost(r: RecurringRow) -> RecurringCost {
-    let (id, name, amount, frequency, kind, category_id, category_name, next_due_date, end_date, active, notes, created_at) = r;
+    let (id, name, amount, frequency, kind, category_id, category_name, next_due_date, paid_on, end_date, active, notes, created_at) = r;
     let monthly_cost = amount * payments_per_month(&frequency);
     let next_occurrence = next_occurrence_of(&next_due_date, &frequency, &end_date);
     RecurringCost {
@@ -490,6 +491,7 @@ fn row_to_cost(r: RecurringRow) -> RecurringCost {
         category_name,
         next_due_date,
         next_occurrence,
+        paid_on,
         end_date,
         active,
         notes,
@@ -499,7 +501,7 @@ fn row_to_cost(r: RecurringRow) -> RecurringCost {
 }
 
 const SELECT_RECURRING: &str = "SELECT r.id, r.name, r.amount, r.frequency, r.kind, r.category_id, c.name, \
-     r.next_due_date, r.end_date, r.active, r.notes, r.created_at \
+     r.next_due_date, r.paid_on, r.end_date, r.active, r.notes, r.created_at \
      FROM recurring_costs r \
      LEFT JOIN categories c ON r.category_id = c.id";
 
@@ -797,6 +799,31 @@ pub async fn update_recurring_cost(
         .map_err(|e| format!("DB query error: {}", e))?;
 
     Ok(row_to_cost(row))
+}
+
+/// Mark a one-off as happened, or put it back to not-yet. By hand, for the
+/// payment no import will ever match — cash, or someone else paying it.
+#[tauri::command]
+pub async fn set_paid_on(
+    pool: State<'_, SqlitePool>,
+    id: i64,
+    paid_on: Option<String>,
+) -> Result<RecurringCost, String> {
+    if let Some(date) = paid_on.as_deref() {
+        NaiveDate::parse_from_str(date, "%Y-%m-%d")
+            .map_err(|_| format!("\"{}\" isn't a date (expected YYYY-MM-DD).", date))?;
+    }
+    let affected = sqlx::query("UPDATE recurring_costs SET paid_on = ? WHERE id = ?")
+        .bind(&paid_on)
+        .bind(id)
+        .execute(&*pool)
+        .await
+        .map_err(|e| format!("DB update error: {}", e))?
+        .rows_affected();
+    if affected == 0 {
+        return Err(format!("Upcoming item {} not found", id));
+    }
+    fetch_cost(&pool, id).await
 }
 
 #[tauri::command]
