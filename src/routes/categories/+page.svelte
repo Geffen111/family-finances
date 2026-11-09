@@ -265,10 +265,14 @@
   async function handleAdd() {
     if (!formName.trim()) return;
     try {
+      // camelCase, not snake_case: Tauri matches arguments by the camelCase
+      // of the Rust parameter name, and a key it doesn't recognise is simply
+      // dropped — which silently made every new subcategory a top-level one
+      // and threw the budget away with it.
       const created = await invoke<Category>("create_category", {
         name: formName.trim(),
-        parent_id: formParentId,
-        monthly_budget: formBudget ? parseFloat(formBudget) : null,
+        parentId: formParentId,
+        monthlyBudget: formBudget ? parseFloat(formBudget) : null,
       });
       if (formExclude) {
         await invoke("set_category_exclusion", { id: created.id, exclude: true });
