@@ -58,6 +58,8 @@ pub fn run() {
             commands::recurring::update_recurring_cost,
             commands::recurring::delete_recurring_cost,
             commands::recurring::find_duplicate_costs,
+            commands::payments::find_payment_matches,
+            commands::payments::confirm_payment,
             commands::goals::list_savings_goals,
             commands::goals::create_savings_goal,
             commands::goals::update_savings_goal,

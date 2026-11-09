@@ -40,6 +40,23 @@
     fixed_amount: boolean;
   }
 
+  // A transaction that looks like it pays something on the list. Suggested,
+  // never applied: a wrong automatic match moves a bill's whole schedule.
+  interface PaymentMatch {
+    cost_id: number;
+    cost_name: string;
+    kind: string;
+    frequency: string;
+    expected_date: string;
+    expected_amount: number;
+    transaction_id: number;
+    tx_date: string;
+    tx_description: string;
+    tx_amount: number;
+    matched_on_name: boolean;
+    new_due_date: string;
+  }
+
   // Items that look like one thing tracked more than once. The backend
   // decides what "look like" means (same merchant key, side, cadence and
   // amount); this page only shows them and lets you delete the spare.
@@ -80,6 +97,9 @@
   let loading = $state(true);
   let duplicates = $state<DuplicateGroup[]>([]);
   let showDuplicates = $state(false);
+  let paymentMatches = $state<PaymentMatch[]>([]);
+  let showPayments = $state(false);
+  let confirming = $state<number | null>(null);
 
   let showModal = $state(false);
   let editId = $state<number | null>(null);
@@ -186,14 +206,16 @@
     // replaces it.
     loading = costs.length === 0;
     try {
-      const [c, cats, dupes] = await Promise.all([
+      const [c, cats, dupes, paid] = await Promise.all([
         invoke<RecurringCost[]>("list_recurring_costs"),
         invoke<Category[]>("get_categories"),
         invoke<DuplicateGroup[]>("find_duplicate_costs"),
+        invoke<PaymentMatch[]>("find_payment_matches"),
       ]);
       costs = c;
       categories = cats;
       duplicates = dupes;
+      paymentMatches = paid;
     } catch (e) {
       showToast(String(e), "error");
     } finally {
@@ -329,6 +351,23 @@
     }
   }
 
+  async function confirmPayment(m: PaymentMatch) {
+    confirming = m.cost_id;
+    try {
+      await invoke("confirm_payment", {
+        costId: m.cost_id,
+        transactionId: m.transaction_id,
+      });
+      await load();
+      if (paymentMatches.length === 0) showPayments = false;
+      showToast(`"${m.cost_name}" marked paid — next ${formatDate(m.new_due_date)}.`, "success");
+    } catch (e) {
+      showToast(String(e), "error");
+    } finally {
+      confirming = null;
+    }
+  }
+
   function markAdded(d: DetectedItem) {
     const next = new Set(addedKeys);
     next.add(detectedKey(d));
@@ -344,7 +383,7 @@
   let scanCandidates = $derived(detected.filter((d) => !d.already_tracked));
 </script>
 
-<svelte:window onkeydown={(e) => { if (e.key !== "Escape") return; showModal = false; showDeleteConfirm = false; showScan = false; showDuplicates = false; }} />
+<svelte:window onkeydown={(e) => { if (e.key !== "Escape") return; showModal = false; showDeleteConfirm = false; showScan = false; showDuplicates = false; showPayments = false; }} />
 
 <div class="page">
   <div class="header">
@@ -363,6 +402,17 @@
       <button class="btn btn-primary" onclick={openAdd}>Add</button>
     </div>
   </div>
+
+  {#if !loading && paymentMatches.length > 0}
+    <div class="dup-note">
+      <span>
+        {paymentMatches.length}
+        {paymentMatches.length === 1 ? "item looks like it has been paid" : "items look like they have been paid"}
+        since {paymentMatches.length === 1 ? "its" : "their"} due date.
+      </span>
+      <button class="btn btn-sm" onclick={() => { showPayments = true; }}>Review</button>
+    </div>
+  {/if}
 
   {#if !loading && duplicateExtras > 0}
     <div class="dup-note">
@@ -525,6 +575,49 @@
       {/if}
       <div class="modal-actions">
         <button class="btn" onclick={() => { showScan = false; }}>Done</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if showPayments}
+  <div class="modal-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) showPayments = false; }}>
+    <div class="modal modal-lg" role="dialog" aria-modal="true" tabindex="-1">
+      <h2>Payments that look like they have landed</h2>
+      <p class="modal-intro">
+        Importing a statement doesn't move a due date on its own — a wrong match would
+        shift a whole schedule. Confirm one and its next date moves on by a cycle from
+        where it was, so a bill that is always a few days late keeps its own rhythm
+        instead of drifting later every month.
+      </p>
+      <div class="scan-list">
+        {#each paymentMatches as m (m.cost_id)}
+          <div class="scan-row">
+            <div class="scan-main">
+              <span class="scan-name">
+                {m.cost_name}
+                {#if !m.matched_on_name}<span class="scan-in" title="Matched on amount and date — the merchant line didn't agree">same amount</span>{/if}
+              </span>
+              <span class="scan-meta">
+                expected {formatDate(m.expected_date)} · {fmt(m.expected_amount)}
+              </span>
+              <span class="scan-meta">
+                found {formatDate(m.tx_date)} · {m.tx_description} · {fmt(m.tx_amount)}
+                → next {formatDate(m.new_due_date)}
+              </span>
+            </div>
+            <button
+              class="btn btn-sm btn-primary"
+              disabled={confirming === m.cost_id}
+              onclick={() => confirmPayment(m)}
+            >
+              {confirming === m.cost_id ? "…" : "Confirm"}
+            </button>
+          </div>
+        {/each}
+      </div>
+      <div class="modal-actions">
+        <button class="btn" onclick={() => { showPayments = false; }}>Done</button>
       </div>
     </div>
   </div>

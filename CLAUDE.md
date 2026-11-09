@@ -210,6 +210,19 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   cadence + amount, **letting the dates differ** — the pair this finds was added
   twice and only one copy has rolled forward. It only reports; the page shows a
   "Review" notice and you delete the spare.
+- **Matching payments to bills** (`commands/payments.rs`) is how a due date moves:
+  `find_matches` looks at every occurrence of an active, non-one-off item from its
+  stored date up to today, and offers the **latest** transaction that could be it, so
+  a date left alone for months catches up in one click rather than one per cycle. Two
+  tiers of evidence: where the merchant key agrees (`normalize_desc`, either way
+  round) the amount may move 60% — an electricity bill is the same bill at $180 or
+  $320 — and where it doesn't, the amount is all there is, so it must be within 5%.
+  The date window is half a cycle (capped at 10 days), so a fortnightly item can't
+  claim the next one's transaction. **Nothing is applied automatically**: a wrong
+  match shifts a whole schedule, so every one is confirmed by the user on the Upcoming
+  page. `confirm` rolls the date on from the **stored** date past the payment, never
+  from the payment itself — a bill that is always three days late would otherwise
+  drift later every month.
 - **Nothing rewrites `next_due_date` when a payment lands** — an import doesn't touch
   `recurring_costs`. `expand_bills` rolls a stale date forward for the projection, and
   `RecurringCost.next_occurrence` (computed in `row_to_cost`, same rolling, never a

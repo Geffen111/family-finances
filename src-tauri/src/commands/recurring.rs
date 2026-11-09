@@ -660,6 +660,16 @@ async fn refuse_duplicate(
     Ok(())
 }
 
+/// One tracked item by id, with its category name and derived figures.
+pub(crate) async fn fetch_cost(pool: &SqlitePool, id: i64) -> Result<RecurringCost, String> {
+    let row = sqlx::query_as::<_, RecurringRow>(&format!("{SELECT_RECURRING} WHERE r.id = ?"))
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("DB query error: {}", e))?;
+    Ok(row_to_cost(row))
+}
+
 /// Insert a recurring cost and read it back. Plain pool, like
 /// `cashflow::expand_bills`, so it is testable without a Tauri `State`.
 pub(crate) async fn insert_recurring_cost(
