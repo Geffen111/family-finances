@@ -61,6 +61,11 @@ pub struct RecurringCost {
     /// "expense" or "income" — see `recurring::KIND_INCOME`.
     pub kind: String,
     pub next_due_date: Option<String>,
+    /// The next date this actually falls on, with a stale `next_due_date`
+    /// rolled forward by its cadence. Nothing rewrites the stored date when a
+    /// payment lands, and `expand_bills` rolls it forward for the projection —
+    /// this is the same rolling, so a card can't disagree with the forecast.
+    pub next_occurrence: Option<String>,
     /// Last date this cost can fall on — a car loan's final instalment, a
     /// subscription cancelled from a known date. None means "keeps going".
     pub end_date: Option<String>,

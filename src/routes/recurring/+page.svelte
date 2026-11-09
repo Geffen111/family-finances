@@ -12,6 +12,9 @@
     category_id: number | null;
     category_name: string | null;
     next_due_date: string | null;
+    // The stored date rolled forward past any cycles that have already
+    // happened — what to show, since nothing rewrites next_due_date on import.
+    next_occurrence: string | null;
     end_date: string | null;
     active: boolean;
     notes: string | null;
@@ -33,6 +36,8 @@
     last_date: string;
     next_due_date: string;
     already_tracked: boolean;
+    // Found by amount rather than by merchant name alone.
+    fixed_amount: boolean;
   }
 
   // Items that look like one thing tracked more than once. The backend
@@ -97,6 +102,10 @@
   let showScan = $state(false);
   let scanning = $state(false);
   let detected = $state<DetectedItem[]>([]);
+  // Everyday spending is left out of the scan by default — a weekly shop is
+  // regular without being a commitment — but it is a filter, so it can be
+  // turned off rather than silently losing things.
+  let includeEveryday = $state(false);
   let addedKeys = $state<Set<string>>(new Set());
 
   const currencyFormat = new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" });
@@ -170,7 +179,12 @@
   $effect(() => { load(); });
 
   async function load() {
-    loading = true;
+    // Only the first load blanks the page. Replacing the grid with one line
+    // of "Loading..." collapses the scroll container, so the browser clamps
+    // the scroll to the top -- which is why saving an edit used to throw you
+    // back up there. A refresh keeps what is on screen until the new data
+    // replaces it.
+    loading = costs.length === 0;
     try {
       const [c, cats, dupes] = await Promise.all([
         invoke<RecurringCost[]>("list_recurring_costs"),
@@ -265,10 +279,16 @@
 
   async function openScan() {
     showScan = true;
-    scanning = true;
     addedKeys = new Set();
+    await runScan();
+  }
+
+  async function runScan() {
+    scanning = true;
     try {
-      detected = await invoke<DetectedItem[]>("get_recurring_transactions");
+      detected = await invoke<DetectedItem[]>("get_recurring_transactions", {
+        includeEveryday,
+      });
     } catch (e) {
       showToast(String(e), "error");
       detected = [];
@@ -318,7 +338,7 @@
   // A merchant can appear on both sides (paid and refunded), so the key that
   // marks a row "Added" has to carry the side too.
   function detectedKey(d: DetectedItem): string {
-    return `${d.is_income ? "in" : "out"}:${d.description}`;
+    return `${d.is_income ? "in" : "out"}:${d.description}:${d.avg_amount.toFixed(2)}`;
   }
 
   let scanCandidates = $derived(detected.filter((d) => !d.already_tracked));
@@ -395,9 +415,10 @@
             {#if !c.active}<span class="chip chip-muted">Paused</span>{/if}
             {#if hasEnded(c)}<span class="chip chip-muted">Ended {formatDate(c.end_date)}</span>{/if}
             {#if isSpent(c)}<span class="chip chip-muted">{c.kind === INCOME ? "Received" : "Paid"}</span>{/if}
-            {#if c.next_due_date}
+            {#if c.next_occurrence ?? c.next_due_date}
               <span class="card-due">
-                {c.frequency === ONE_OFF ? "due" : "next"} {formatDate(c.next_due_date)}
+                {c.frequency === ONE_OFF ? "due" : "next"}
+                {formatDate(c.next_occurrence ?? c.next_due_date)}
               </span>
             {/if}
             {#if c.end_date && !hasEnded(c)}
@@ -462,7 +483,9 @@
     <div class="modal modal-lg" role="dialog" aria-modal="true" tabindex="-1">
       <h2>Found in your transactions</h2>
       <p class="hint">
-        Money in or out at least three times on a regular cadence. Adding one tracks it at its
+        Money in or out at least three times on a regular cadence, seen within the last
+        year. Everyday spending is skipped, and where one merchant line covers several
+        subscriptions, each amount is offered separately. Adding one tracks it at its
         average amount — edit it afterwards if that isn't right.
       </p>
       {#if scanning}
@@ -472,6 +495,10 @@
       {:else if scanCandidates.length === 0}
         <p class="loading">Every regular payment found is already tracked.</p>
       {:else}
+        <label class="checkbox scan-filter">
+          <input type="checkbox" bind:checked={includeEveryday} onchange={runScan} />
+          Include everyday spending (food, retail, fuel, cash)
+        </label>
         <div class="scan-list">
           {#each scanCandidates as d (detectedKey(d))}
             <div class="scan-row">
@@ -479,6 +506,7 @@
                 <span class="scan-name">
                   {d.description}
                   {#if d.is_income}<span class="scan-in">income</span>{/if}
+                  {#if d.fixed_amount}<span class="scan-in" title="Found by amount: the same figure on the same rhythm, under a reference that changes every time">same amount</span>{/if}
                 </span>
                 <span class="scan-meta">
                   {d.frequency} · {d.is_income ? "+" : ""}{fmt(d.avg_amount)} avg ·
@@ -591,6 +619,7 @@
   .card-due { font-size: 0.72rem; color: var(--text-secondary); }
   .card-notes { margin-top: 0.6rem; font-size: 0.78rem; color: var(--text-secondary); }
 
+  .scan-filter { font-size: 0.8rem; color: var(--text-secondary); margin: 0 0 0.6rem; }
   .scan-list { display: flex; flex-direction: column; gap: 0.5rem; max-height: 50vh; overflow-y: auto; }
   .scan-row { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.6rem 0.75rem; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-secondary); }
   .scan-main { min-width: 0; }

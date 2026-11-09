@@ -102,6 +102,12 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   a reply that fails to parse counts as a failed attempt and the fallback model gets a go;
   it returns an `Answer<T>` carrying which model answered. Don't send a model id directly
   except via `chat_once`.
+- **`invoke` argument names are camelCase.** Tauri matches an argument to a Rust
+  parameter by the camelCase of its name (`parent_id` -> `parentId`), and a key it
+  doesn't recognise is **silently dropped** — an `Option` parameter then arrives as
+  `None` with no error anywhere. That is what made every new subcategory a top-level
+  one (and threw its budget away with it) until it was fixed. When a command seems to
+  ignore one argument, check the spelling of the key before anything else.
 - **Reading back a row you just inserted:** take the id from the INSERT itself
   (`... RETURNING id` + `fetch_one`), never from a follow-up
   `SELECT last_insert_rowid()`. The pool holds **4 connections** and hands out
@@ -181,11 +187,34 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   things. Exact rather than by merchant key on purpose: two loans both called "Loan
   Repayment" share a key but differ in amount and date. The scan dialog reports that
   refusal as "already in your list" and marks the row Added, since it is.
+  What the scan offers is filtered three ways, because a list full of noise is a
+  list nobody reads: a series whose last sighting is over a year old is dropped
+  (`STALE_AFTER_DAYS` — a cancelled subscription is history, and its cadence is
+  still perfectly regular, so recency has to be its own rule); categories that are
+  pay-as-you-go spending are skipped (`EVERYDAY_WORDS`, matched as whole words
+  against the "Parent Child" path, so naming a parent covers its subtree — and
+  deliberately *not* "entertainment", "online", "gaming" or "apps", which is where
+  subscriptions live), with a switch in the dialog to include them anyway; and one
+  merchant key is split by amount when it covers several things.
+  That last one matters because some banks write a different reference every month
+  ("Wallet Co Australia 1234567890123"), so `normalize_desc` collapses several
+  subscriptions into one key and only the amount tells them apart. `cluster_by_amount`
+  groups charges within **5%** of each other (`SAME_AMOUNT_TOLERANCE`) — a *tolerance*,
+  not the exact cents, or a pay that drifts a few dollars between periods looks like
+  three different subscriptions. More than one cluster with its own rhythm means the
+  key is a mixed bag, and then the whole-key average is dropped (it would be a figure
+  you never actually pay) and each cluster is offered instead, labelled with its
+  amount. One cluster means the key is one thing: nothing is split.
   Finding the ones already there is a separate, looser pass: `duplicate_groups`
   (command `find_duplicate_costs`) groups live items by merchant key + kind +
   cadence + amount, **letting the dates differ** — the pair this finds was added
   twice and only one copy has rolled forward. It only reports; the page shows a
   "Review" notice and you delete the spare.
+- **Nothing rewrites `next_due_date` when a payment lands** — an import doesn't touch
+  `recurring_costs`. `expand_bills` rolls a stale date forward for the projection, and
+  `RecurringCost.next_occurrence` (computed in `row_to_cost`, same rolling, never a
+  one-off and never past `end_date`) is what the cards show, so the page can't disagree
+  with the forecast. Show `next_occurrence`, store `next_due_date`.
 - **`cashflow::expand_bills(pool, from, to)`** is the one place a recurring cost becomes
   dated occurrences: it rolls a stale `next_due_date` forward into the window, stops at
   `end_date`, and treats a `One-off` as exactly one occurrence that is *never* rolled
