@@ -572,6 +572,12 @@
           plugins: {
             legend: { position: "bottom", labels: { color: themeVar("--text-secondary", "#7b7468"), usePointStyle: true, pointStyle: "circle", boxWidth: 8 } },
             tooltip: {
+              // Anchored to the bar nearest the cursor. The default
+              // ("average") puts the box at the mean position of the active
+              // elements, which on horizontal bars is the midpoint between
+              // the two bar *tips* — so it leaps left and right with the
+              // values instead of staying with the month you are pointing at.
+              position: "nearest",
               callbacks: {
                 label: (ctx: any) => `${ctx.dataset.label}: ${fmt(ctx.parsed.x ?? ctx.parsed)}`,
               },
