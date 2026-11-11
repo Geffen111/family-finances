@@ -263,7 +263,11 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   row when the source is `average` — otherwise a scheduled category would silently revert.
 - **Scheduled amounts in the forecast:** `services::forecast::scheduled_by_month` buckets
   `expand_bills` into `(category_id, is_income, "YYYY-MM")` once per run, before the month
-  loop. The side is part of the key because baselines are split the same way — a scheduled
+  loop. It drops occurrences in `exclude_from_budget` categories, and `calculate_forecast`
+  skips those categories when synthesising baseline rows — without both, a scheduled
+  source was a way back in for a category the flag is supposed to keep out entirely
+  (a tracked transfer to savings projected as an expense), and the page's "Sched /mo"
+  disagreed with the projection. The side is part of the key because baselines are split the same way — a scheduled
   pay lands on the category's income row and a bill on its expense row, so one category
   can hold both without them cancelling out. A category with no base-period activity has
   **no baseline row**, so `calculate_forecast` adds a zero-average row for any category on

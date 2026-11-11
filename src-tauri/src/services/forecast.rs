@@ -55,8 +55,21 @@ pub async fn calculate_forecast(
     // never spent in) or a new income stream would project nothing whatever
     // you entered. Give those categories a zero-average row, on whichever side
     // their dated amounts actually fall.
+    // Categories the budget flag keeps out of every aggregation. A synthesised
+    // baseline row below would otherwise be a way back in for one of them.
+    let budget_excluded: HashSet<i64> =
+        sqlx::query_scalar::<_, i64>("SELECT id FROM categories WHERE exclude_from_budget = 1")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("DB query error: {}", e))?
+            .into_iter()
+            .collect();
+
     for adj in adjustments {
-        if adj.source == "average" || excluded_category_ids.contains(&adj.category_id) {
+        if adj.source == "average"
+            || excluded_category_ids.contains(&adj.category_id)
+            || budget_excluded.contains(&adj.category_id)
+        {
             continue;
         }
         for is_income in [false, true] {
@@ -292,11 +305,27 @@ pub async fn scheduled_by_month(
     let end = add_months(&start, months_ahead.max(0));
     let bills = crate::commands::cashflow::expand_bills(pool, start, end).await?;
 
+    // `exclude_from_budget` keeps a category out of every forecast figure, and
+    // a dated occurrence is no exception: a tracked transfer to savings is
+    // real money moving, but counting it would double the household's
+    // outgoings. `compute_baselines` filters the same flag, so dropping it
+    // here is what keeps the two sides of the page agreeing.
+    let excluded: HashSet<i64> =
+        sqlx::query_scalar::<_, i64>("SELECT id FROM categories WHERE exclude_from_budget = 1")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("DB query error: {}", e))?
+            .into_iter()
+            .collect();
+
     let mut map: HashMap<(i64, bool, String), f64> = HashMap::new();
     let mut unlinked = 0.0;
     let mut unlinked_items = 0;
     for b in bills {
         match b.category_id {
+            // Linked, but to a category the forecast doesn't count. Not
+            // "unlinked": there is nothing for the user to go and fix.
+            Some(cid) if excluded.contains(&cid) => {}
             Some(cid) => {
                 let month = b.due_date[..7].to_string();
                 *map.entry((cid, b.is_income, month)).or_insert(0.0) += b.amount;
@@ -738,6 +767,49 @@ mod tests {
             income_growth_pct: 0.0,
         };
         (pool, scenario, defaults)
+    }
+
+    /// A category flagged `exclude_from_budget` is out of every forecast
+    /// aggregation — internal transfers are the whole reason the flag exists.
+    /// A scheduled basis must not be a way back in: `compute_baselines`
+    /// filters the flag, but a scheduled source synthesises its own baseline
+    /// row when the category has no history, which would walk straight past it.
+    #[tokio::test]
+    async fn an_excluded_category_stays_out_even_on_a_scheduled_basis() {
+        let (pool, scenario, defaults) = pool_with_a_dated_bill().await;
+        for sql in [
+            "INSERT INTO categories (id, name, exclude_from_budget) VALUES (9, 'Transfers', 1)",
+            "INSERT INTO recurring_costs (name, amount, frequency, category_id, next_due_date)
+             VALUES ('To savings', 500, 'Monthly', 9, '2026-07-05')",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+
+        let months = monthly_amounts(
+            &pool,
+            &scenario,
+            &defaults,
+            &[adjustment(9, "scheduled", 0.0, None)],
+            9,
+        )
+        .await;
+        assert!(
+            months.iter().all(|(_, amount)| *amount == 0.0),
+            "an excluded category should project nothing: {months:?}"
+        );
+
+        // And the figure the page shows has to agree with the projection.
+        let (map, _, _) = scheduled_by_month(
+            &pool,
+            NaiveDate::from_ymd_opt(2026, 7, 1).unwrap(),
+            12,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !map.keys().any(|(cid, _, _)| *cid == 9),
+            "an excluded category should not appear in the schedule either"
+        );
     }
 
     fn adjustment(category_id: i64, source: &str, pct: f64, fixed: Option<f64>) -> ScenarioAdjustment {

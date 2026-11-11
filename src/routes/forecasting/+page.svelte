@@ -170,10 +170,31 @@
   // all, whichever side has something scheduled.
   function schedForRow(catId: number): ScheduledCategory | undefined {
     const avg = categoryAverage(catId);
-    if (avg) return schedByCategory.get(`${catId}:${avg.income}`);
+    const preferred = avg ? schedByCategory.get(`${catId}:${avg.income}`) : undefined;
+    // Fall back to the other side rather than reporting nothing. Editing a
+    // tracked item's type -- a rebate, a refund, a pay -- puts its dated
+    // amount on the side this category has no history on, and the forecast
+    // projects it there whatever this column happens to be looking at.
     return (
-      schedByCategory.get(`${catId}:false`) ?? schedByCategory.get(`${catId}:true`)
+      preferred ??
+      schedByCategory.get(`${catId}:false`) ??
+      schedByCategory.get(`${catId}:true`)
     );
+  }
+
+  // What a scheduled basis does when nothing is linked to the category. Worth
+  // spelling out: the row still reads "Scheduled", and the figure it projects
+  // is zero.
+  function nothingScheduledHelp(source: string, hasFixed: boolean): string {
+    if (source === "scheduled") {
+      return "This basis takes its figure from dated upcoming items, and nothing in Upcoming income & expenses is linked to this category — so it projects $0 a month. Check the item is still active, still has a date, and is still linked here, or switch the basis back to Average.";
+    }
+    if (source === "scheduled_plus_average") {
+      return "Nothing in Upcoming income & expenses is linked to this category, so this basis is projecting the average alone — the same as Average. Check the item is still active, still has a date, and is still linked here.";
+    }
+    return hasFixed
+      ? "Nothing in Upcoming income & expenses is linked to this category, so this row is projecting the extra amount alone. Check the item is still active, still has a date, and is still linked here."
+      : "Nothing is linked to this category and no extra amount is set, so this projects $0 a month.";
   }
 
   let loadingScenarios = $state(false);
@@ -1103,11 +1124,15 @@
                       </td>
                       <td
                         class="num-col sched-cell"
+                        class:avg-income={sched?.is_income}
                         title={sched
-                          ? `${wholeDollars.format(sched.total)} falling due across ${sched.months_hit} of the next ${scheduled?.months_ahead ?? monthsAhead} months`
+                          ? `${wholeDollars.format(sched.total)} of ${sched.is_income ? "income" : "expenses"} falling due across ${sched.months_hit} of the next ${scheduled?.months_ahead ?? monthsAhead} months` +
+                            ((adj?.adjustment_pct ?? 0) !== 0 && usesScheduled(source)
+                              ? `. The ${adj!.adjustment_pct}% adjustment scales it to ${wholeDollars.format(sched.monthly_equivalent * (1 + adj!.adjustment_pct / 100))} a month in the forecast.`
+                              : "")
                           : "Nothing linked to this category in Upcoming income & expenses — link one there to use a scheduled basis"}
                       >
-                        {#if sched}{wholeDollars.format(sched.monthly_equivalent)}{:else}&mdash;{/if}
+                        {#if sched}{sched.is_income ? "+" : ""}{wholeDollars.format(sched.monthly_equivalent)}{:else}&mdash;{/if}
                       </td>
                       <td class="basis-col">
                         <select
@@ -1144,7 +1169,9 @@
                           value={adj?.fixed_amount ?? ""}
                           placeholder={source === "scheduled_plus_fixed"
                             ? "0"
-                            : wholeDollars.format(projected)}
+                            : usesFixed(source)
+                              ? wholeDollars.format(projected)
+                              : ""}
                           disabled={excluded || !usesFixed(source)}
                           title={source === "scheduled_plus_fixed"
                             ? "An extra monthly amount on top of the dated expenses"
@@ -1169,6 +1196,11 @@
                             class="badge badge-warn"
                             title={`This category averaged ${wholeDollars.format(avg?.amount ?? 0)} a month over the base period, and its linked expenses come to ${wholeDollars.format(scheduledMonthly(cat.id))} a month. If those are the same bill, this basis counts it twice — the average already contains whatever you paid during the base period. Use Scheduled on its own, or Scheduled + extra with your own figure for the rest.`}
                           >&#9888; Double count?</span>
+                        {:else if usesScheduled(source) && scheduledMonthly(cat.id) === 0}
+                          <span
+                            class="badge badge-warn"
+                            title={nothingScheduledHelp(source, adj?.fixed_amount != null)}
+                          >&#9888; Nothing linked</span>
                         {:else if usesScheduled(source)}
                           <span class="badge badge-sched" title={SOURCE_HELP[source]}>
                             {source === "scheduled" ? "Scheduled" : source === "scheduled_plus_average" ? "Sched + avg" : "Sched + extra"}
