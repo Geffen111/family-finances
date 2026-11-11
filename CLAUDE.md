@@ -33,8 +33,15 @@ present locally, so `cargo check` works.
 Pushing to `main` builds **x64 and ARM64** installers and publishes them to a rolling
 `latest` (public) GitHub Release, plus a `build-info.json` (the commit, via `GITHUB_SHA`).
 Download page: `github.com/Geffen111/family-finances/releases/tag/latest` — `*_x64_*` for
-normal PCs, `*_arm64_*` for Windows-on-ARM. Note: the workflow runs on *any* push to `main`
-(including docs), so a README-only change still cuts a release.
+normal PCs, `*_arm64_*` for Windows-on-ARM. The push trigger has a `paths-ignore`
+(`**.md`, `LICENSE`, `.gitignore`, `audit.yml`), so a docs-only push cuts **no** release
+and produces **no run at all** — not a skipped one, nothing in the Actions list. The same
+rule bites an empty commit: its diff is empty, every (zero) changed path counts as ignored,
+and no run is created, so `git commit --allow-empty` is not a way to re-trigger a build.
+To build without a code change, use the workflow's `workflow_dispatch`: Actions →
+"Build Family Finance (Windows)" → **Run workflow**. (Worth knowing because a run can also
+sit `queued` for a day with no runner assigned and no jobs created, which looks identical
+to "nothing was pushed" from the releases page.)
 
 The app's in-app "update available" banner (sidebar) compares the commit Vite stamps in
 (`__APP_COMMIT__`, see `vite.config.js`) against `build-info.json`; needs the repo public.
@@ -42,9 +49,32 @@ The app's in-app "update available" banner (sidebar) compares the commit Vite st
 A second workflow, `.github/workflows/audit.yml`, audits npm + Cargo advisories weekly
 (and on any manifest/lockfile change). It is deliberately separate: an advisory published
 against an untouched dependency shouldn't stop an installer being released. npm gates on
-`--audit-level high`; `cargo audit` reads `src-tauri/.cargo/audit.toml`, which ignores
-RUSTSEC-2023-0071 (`rsa` is in Cargo.lock via sqlx's optional MySQL driver and never
-compiled — `cargo tree -i rsa` is empty).
+`--audit-level high`; `cargo audit` reads `src-tauri/.cargo/audit.toml`, which ignores two
+advisories, for different reasons:
+- **RUSTSEC-2023-0071** (`rsa`) — in Cargo.lock via sqlx's optional MySQL driver and never
+  compiled; `cargo tree -i rsa` is empty. Not in the app at all.
+- **RUSTSEC-2026-0459** (`libsqlite3-sys` 0.30.1, CVE-2026-119375) — this one *does* ship.
+  SQLite before 3.54.0 can return uninitialised page-cache memory when a db is opened
+  alongside a `-wal` whose page size differs, and we run in WAL mode, so the file pair it
+  needs is exactly what we create. It is ignored because **there is nothing to bump to**:
+  the fix is libsqlite3-sys >= 0.39.0, sqlx 0.8.6 requires `^0.30.1` and even sqlx 0.9.0
+  requires `>=0.30.1, <0.38.0` — so no released sqlx permits a patched SQLite, and
+  upgrading sqlx wouldn't clear the advisory. A direct `libsqlite3-sys` dependency can't
+  force it either: it's a `links = sqlite3` crate, so two versions are a hard error.
+  Exposure is limited by what the attack needs — write access to
+  `%OneDrive%\Apps\FamilyFinance\`, which already grants reading the whole (unencrypted)
+  database directly, so the marginal risk is small. **Re-check when sqlx widens the range**
+  (`curl -s https://crates.io/api/v1/crates/sqlx-sqlite/<ver>/dependencies`) and drop the
+  ignore the moment a bump is possible.
+
+Known npm advisories, all dev/build-time and none currently fixable: `@sveltejs/kit`
+2.70.3 carries two lows (open redirect via enhanced form submission; XSS via an untrusted
+cache-control header on a prerendered page) whose fix is the 3.0 major — neither is
+reachable here, since the static adapter ships no server to issue a redirect or set a
+header. `deepmerge` 4.3.1 (prototype poisoning, via `vite-plugin-svelte`) names 4.3.2 as
+the patch, but **4.3.2 was never published** — don't add an override for it, `pnpm install`
+would fail on a version that doesn't exist. It is a build-time dependency and never reaches
+the bundle.
 
 CI quirks that are load-bearing — don't "simplify" these away:
 - **esbuild's build script must stay approved** via `allowBuilds: { esbuild: true }` in

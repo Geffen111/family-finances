@@ -5,5 +5,31 @@
 # compiled into the app. RUSTSEC-2023-0071 has no patched release, so there is
 # nothing to bump to; ignore it here rather than leave a standing red result.
 # Re-check this if a MySQL/Postgres driver is ever enabled.
+# RUSTSEC-2026-0459 -- libsqlite3-sys 0.30.1 bundles SQLite < 3.54.0
+# (CVE-2026-119375): opening a database alongside a `-wal` file whose page size
+# differs can return uninitialised page-cache memory through ordinary queries.
+# Unlike the rsa entry above, this code really is compiled into the app, and
+# db/mod.rs sets journal_mode = WAL, so the db + `-wal` pair the attack needs is
+# what we create.
+#
+# It is ignored because nothing can be bumped. The fix is libsqlite3-sys
+# >= 0.39.0, but sqlx 0.8.6 requires `^0.30.1` (0.30.x only) and even sqlx 0.9.0
+# requires `>=0.30.1, <0.38.0` -- no released sqlx allows a patched SQLite, so
+# upgrading sqlx would be a breaking change that leaves this advisory open.
+# Declaring libsqlite3-sys directly doesn't work either: it sets
+# `links = "sqlite3"`, so two versions in one tree is a hard error.
+#
+# What bounds the risk: the attacker has to write the db and `-wal` into
+# %OneDrive%\Apps\FamilyFinance\, and anyone who can do that can already read
+# the whole database, which is not encrypted. The leak is of this process's own
+# memory, so it is not nothing -- revisit if the DB ever gets encrypted, is
+# shared with less trusted people, or starts opening files from elsewhere.
+#
+# Re-check whether sqlx has widened its range:
+#   curl -s https://crates.io/api/v1/crates/sqlx-sqlite/<ver>/dependencies
+# and delete this ignore as soon as a bump is possible.
 [advisories]
-ignore = ["RUSTSEC-2023-0071"]
+ignore = [
+  "RUSTSEC-2023-0071",
+  "RUSTSEC-2026-0459",
+]
