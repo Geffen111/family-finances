@@ -901,21 +901,34 @@
   async function saveTerms(accountId: number) {
     const edit = termEdits[accountId];
     if (!edit) return;
-    try {
-      await invoke("update_account_debt_terms", {
-        accountId,
-        apr: edit.apr ? parseFloat(edit.apr) : null,
-        minPayment: edit.min_payment ? parseFloat(edit.min_payment) : null,
-      });
-      showToast("Saved.", "success");
-      await loadLiabilities();
-      if (debtPlan) await runDebtPlan();
-    } catch (e) {
-      showToast(String(e), "error");
-    }
+    return queueWrite(async () => {
+      try {
+        await invoke("update_account_debt_terms", {
+          accountId,
+          apr: edit.apr ? parseFloat(edit.apr) : null,
+          minPayment: edit.min_payment ? parseFloat(edit.min_payment) : null,
+        });
+        showToast("Saved.", "success");
+        await loadLiabilities();
+        // runDebtPlanNow, not runDebtPlan: we are *inside* the write queue, and
+        // runDebtPlan waits on it, so going through the front door here would
+        // deadlock on ourselves.
+        if (debtPlan) await runDebtPlanNow();
+      } catch (e) {
+        showToast(String(e), "error");
+      }
+    });
   }
 
+  // Saving terms and simulating are two separate clicks here, so this is a
+  // narrower window than the adjustments table -- but it is the same race:
+  // simulate_debt_payoff reads accounts.apr / min_payment straight from the DB.
   async function runDebtPlan() {
+    await pendingWrites;
+    return runDebtPlanNow();
+  }
+
+  async function runDebtPlanNow() {
     debtLoading = true;
     try {
       debtPlan = await invoke<DebtPayoffPlan>("simulate_debt_payoff", {
