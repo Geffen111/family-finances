@@ -251,8 +251,15 @@ pub async fn save_scenario_adjustment(
 #[derive(Debug, serde::Serialize)]
 pub struct CategoryAverage {
     pub category_id: i64,
+    /// Net monthly income, where the category comes out that way. A category
+    /// is netted to one side, so exactly one of these two is zero.
     pub monthly_income: f64,
+    /// Net monthly spending: what was spent, less anything credited back.
     pub monthly_expense: f64,
+    /// The monthly average the netting absorbed — rebates off a cost, refunds
+    /// off a pay. Non-zero means the figure beside it is a net one, which the
+    /// page says rather than leaving the user to wonder where it went.
+    pub monthly_offset: f64,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -284,19 +291,22 @@ pub async fn get_scenario_baselines(
     )
     .await?;
 
-    // compute_baselines yields separate income and expense rows per category.
+    // compute_baselines yields one netted row per category; this only puts it
+    // on the side the page expects to read it from.
     let mut by_cat: std::collections::HashMap<i64, CategoryAverage> = Default::default();
     for bl in baselines {
         let entry = by_cat.entry(bl.category_id).or_insert(CategoryAverage {
             category_id: bl.category_id,
             monthly_income: 0.0,
             monthly_expense: 0.0,
+            monthly_offset: 0.0,
         });
         if bl.is_income {
             entry.monthly_income += bl.monthly_avg;
         } else {
             entry.monthly_expense += bl.monthly_avg;
         }
+        entry.monthly_offset += bl.offset;
     }
 
     Ok(ScenarioBaselines {

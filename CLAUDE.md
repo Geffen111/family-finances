@@ -291,31 +291,48 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   scheduled part; a fixed amount is never scaled. Unknown sources are an error, not a
   silent fall back to the average. `save_scenario_adjustment` only deletes a 0%/no-fixed
   row when the source is `average` — otherwise a scheduled category would silently revert.
-- **A fixed amount has no side, so it has to be given one.** `scenario_adjustments` is
-  keyed by category, but baselines are split income/expense — and `compute_baselines`
-  gives a category an income row for *any* credit in the base period, a single refund
-  included (deliberately: one category can hold a pay and a bill, or interest and fees,
-  and they must not cancel out). Applying `fixed_amount` to **both** rows put it into the
-  projection twice, once each way: income and expenses each moved by it and the net came
-  out identical, so $5,000 and $500 drew the same line and the box looked like it did
-  nothing. One $46 dinner reimbursement was enough. `calculate_forecast` now resolves a
-  `fixed_side` per adjusted category once, before the month loop — the side that
-  category's base-period history is predominantly on, the expense side where it has none
-  (also the only side a synthesised row is guaranteed to have) — and the other side keeps
-  projecting its own average, so the refund isn't thrown away either. That dominant-side
-  rule is the same one the page's `categoryAverage` uses, which is what keeps the
-  "Projected /mo" column and the projection agreeing. A *percentage* needs none of this:
-  it scales each side, so the net scales with it — which is why a % adjustment always
-  appeared to work while a fixed amount appeared inert.
+- **A category is netted to one side.** `compute_baselines` emits **one row per
+  category**: spending less anything credited back to it, `is_income` set by which way
+  the net falls, plus `offset` — the monthly average the netting absorbed. The reason is
+  how the categories are actually used: a Medicare rebate, an insurance payout or a
+  reimbursement is filed against the cost it offsets, so the figure that means anything
+  is the net one. Split, a $400 specialist visit with a $332 rebate reported $400 in the
+  "Avg /mo" column and listed the rebate as *income* in the month breakdown, which reads
+  as money coming in. `scheduled_by_month` nets the same way, per category-month, or a
+  scheduled basis would read the two apart again and the same refund-as-income would come
+  back by another route (a month netting to exactly zero is dropped, not counted as a
+  month something falls due). **Netting changes no net total** — `debit - credit` either
+  way, and a % scales both sides equally — so the net line is unmoved; what changes is
+  that income growth no longer compounds a refund, and the two halves can't be read or
+  adjusted apart. That's the cost: a category deliberately holding a pay *and* an
+  unrelated bill now shows only the difference, so keep those separate. `offset` reaches
+  the page as `CategoryAverage.monthly_offset`, which marks the cell `net` and says how
+  much in the tooltip — a cost that reads low needs a visible reason.
+- **A fixed amount still has no side, so it has to be given one.** `scenario_adjustments`
+  is keyed by category, but baselines carry `is_income`, and a scheduled source can
+  synthesise a *second* row for a category whose history netted to the other side.
+  Applying `fixed_amount` to both puts it into the projection twice, once each way: income
+  and expenses each move by it and the net comes out identical, so $5,000 and $500 draw
+  the same line and the box looks like it does nothing. (Before netting, one $46 dinner
+  reimbursement was enough to trigger that.) `calculate_forecast` resolves a `fixed_side`
+  per adjusted category once, before the month loop — the side that category's
+  base-period history is on, the expense side where it has none (also the only side a
+  synthesised row is guaranteed to have). That rule is the same one the page's
+  `categoryAverage` uses, which is what keeps the "Projected /mo" column and the
+  projection agreeing. A *percentage* needs none of this: it scales each side, so the net
+  scales with it — which is why a % adjustment always appeared to work while a fixed
+  amount appeared inert. A row projecting exactly 0.0 isn't pushed into
+  `ForecastMonth.categories` at all: it adds nothing to any total, and the breakdown
+  shouldn't list a category that cancelled out or an empty synthesised row.
 - **Scheduled amounts in the forecast:** `services::forecast::scheduled_by_month` buckets
   `expand_bills` into `(category_id, is_income, "YYYY-MM")` once per run, before the month
   loop. It drops occurrences in `exclude_from_budget` categories, and `calculate_forecast`
   skips those categories when synthesising baseline rows — without both, a scheduled
   source was a way back in for a category the flag is supposed to keep out entirely
   (a tracked transfer to savings projected as an expense), and the page's "Sched /mo"
-  disagreed with the projection. The side is part of the key because baselines are split the same way — a scheduled
-  pay lands on the category's income row and a bill on its expense row, so one category
-  can hold both without them cancelling out. A category with no base-period activity has
+  disagreed with the projection. Each category-month is netted to one side first, as `compute_baselines` nets history,
+  so the side stays in the key only because the net can fall either way — a month holding
+  only a dividend is income. A category with no base-period activity has
   **no baseline row**, so `calculate_forecast` adds a zero-average row for any category on
   a scheduled source — the expense side always (a fixed extra has to land somewhere) and
   the income side only where something income-y is actually scheduled. Occurrences with no
@@ -359,8 +376,9 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   quietly break down the baseline. Series 0 is the baseline and the rest follow the
   chart's dataset order; the cash chart passes a month offset of 1 because its first
   column is "Now" (today's balance, not a projected month). `ForecastCategoryAmount`
-  carries `is_income` so the table can separate the two sides — without it a category
-  with both shows twice under one name with no way to tell $500 out from $500 in.
+  carries `is_income` so the table can split expenses from income — netting means a
+  category appears once, but the side it lands on is still the difference between $500
+  going out and $500 coming in.
 - **Emoji in Svelte:** put emoji in markup (browser decodes `&#x...;`) OR use `"\u{1F4C8}"`
   inside `{}` expressions — a raw `"&#x...;"` string in an expression renders as literal text.
 - **Modals:** overlay `role="presentation"` closes on `e.target === e.currentTarget`; inner

@@ -297,6 +297,15 @@ pub struct ScenarioAdjustmentWithPath {
 pub struct CategoryBaseline {
     pub category_id: i64,
     pub category_path: String,
+    /// The category's **net** monthly figure: spending less anything credited
+    /// back to it over the base period. One row per category, never two.
     pub monthly_avg: f64,
+    /// Which side the net falls on — expenses for a category you spend in,
+    /// income for one you're paid into.
     pub is_income: bool,
+    /// What the netting absorbed: the monthly average of the smaller side,
+    /// the rebates knocked off a cost or the refunds off a pay. Zero for a
+    /// one-sided category. Reported so the page can say a figure is a net
+    /// one rather than leaving the difference unexplained.
+    pub offset: f64,
 }

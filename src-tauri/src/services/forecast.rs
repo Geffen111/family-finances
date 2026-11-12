@@ -92,20 +92,19 @@ pub async fn calculate_forecast(
                     .unwrap_or_else(|| "Uncategorised".to_string()),
                 monthly_avg: 0.0,
                 is_income,
+                offset: 0.0,
             });
         }
     }
 
     // A fixed amount is a single figure for the whole category and carries no
     // side of its own, so it has to land on exactly one of the category's
-    // baseline rows. A spending category with one refund in the base period
-    // has an income row as well as an expense row, and adding the fixed amount
-    // to both put it into the projection twice, once each way: income and
-    // expenses both moved by it and the net never budged, whatever you typed.
-    // One $46 reimbursement in a dining category was enough to make a $5,000
-    // figure look exactly like a $500 one. It lands on the side the category's
-    // history is predominantly on, and on the expense side where there is none
-    // (which is also the only side a synthesised row is guaranteed to have).
+    // baseline rows -- applied to both, it goes into the projection twice,
+    // once each way, and the net never budges whatever you type. History now
+    // yields one netted row per category, but a scheduled source can still
+    // synthesise a second, so the rule stays: the side the category's history
+    // is on, and the expense side where it has none (which is also the only
+    // side a synthesised row is guaranteed to have).
     let mut fixed_side: HashMap<i64, bool> = HashMap::new();
     for adj in adjustments {
         let side_total = |income: bool| {
@@ -135,9 +134,9 @@ pub async fn calculate_forecast(
                 continue;
             }
 
-            // Dated amounts land on their own side of the category: a pay on
-            // the income row, a bill on the expense row. A category can hold
-            // both, and they must not cancel each other out.
+            // Dated amounts, netted per month by `scheduled_by_month` and so
+            // already on one side: whichever way this category's month came
+            // out. A row on the other side sees nothing, which is right.
             let scheduled = schedule
                 .get(&(bl.category_id, bl.is_income, month_key.clone()))
                 .copied()
@@ -188,12 +187,18 @@ pub async fn calculate_forecast(
                 projected_expenses += compounded;
             }
 
-            categories.push(ForecastCategoryAmount {
-                category_id: bl.category_id,
-                category_path: bl.category_path.clone(),
-                amount: compounded,
-                is_income: bl.is_income,
-            });
+            // A row that projects exactly nothing is noise in the breakdown:
+            // a category whose spending and refunds cancel out, or the empty
+            // expense row synthesised above so a fixed extra has somewhere to
+            // land. It adds nothing to any total either way.
+            if compounded != 0.0 {
+                categories.push(ForecastCategoryAmount {
+                    category_id: bl.category_id,
+                    category_path: bl.category_path.clone(),
+                    amount: compounded,
+                    is_income: bl.is_income,
+                });
+            }
         }
 
         let projected_net = projected_income - projected_expenses;
@@ -323,10 +328,12 @@ pub async fn compare_scenarios(
 /// occurrences that aren't linked to a category (nothing can attribute those
 /// to a category row, so the UI says so rather than quietly losing them).
 ///
-/// The side is part of the key because a category's baseline is split the same
-/// way: a scheduled pay has to land on the income row, not be subtracted.
+/// Each category-month is netted to one side, the same rule `compute_baselines`
+/// applies to history: a rebate dated against the cost it offsets reduces that
+/// cost rather than appearing as income. The side stays in the key because the
+/// net can fall either way — a month holding only a dividend is income.
 ///
-/// `cashflow::expand_bills` does the cadence work — this only buckets.
+/// `cashflow::expand_bills` does the cadence work — this buckets and nets.
 pub async fn scheduled_by_month(
     pool: &SqlitePool,
     start: NaiveDate,
@@ -348,7 +355,8 @@ pub async fn scheduled_by_month(
             .into_iter()
             .collect();
 
-    let mut map: HashMap<(i64, bool, String), f64> = HashMap::new();
+    // (expenses, income) per category-month, netted against each other below.
+    let mut pairs: HashMap<(i64, String), (f64, f64)> = HashMap::new();
     let mut unlinked = 0.0;
     let mut unlinked_items = 0;
     for b in bills {
@@ -358,7 +366,12 @@ pub async fn scheduled_by_month(
             Some(cid) if excluded.contains(&cid) => {}
             Some(cid) => {
                 let month = b.due_date[..7].to_string();
-                *map.entry((cid, b.is_income, month)).or_insert(0.0) += b.amount;
+                let e = pairs.entry((cid, month)).or_insert((0.0, 0.0));
+                if b.is_income {
+                    e.1 += b.amount;
+                } else {
+                    e.0 += b.amount;
+                }
             }
             None => {
                 unlinked += b.amount;
@@ -366,6 +379,21 @@ pub async fn scheduled_by_month(
             }
         }
     }
+
+    // Netted per category-month, the same rule `compute_baselines` applies to
+    // history: a dated rebate belongs against the cost it offsets, not on its
+    // category's income line. Without this a scheduled basis would read the
+    // two apart again, and the same refund-as-income the averages used to
+    // show would come back by another route. A month that nets to exactly
+    // zero is dropped rather than counted as a month something falls due in.
+    let map = pairs
+        .into_iter()
+        .filter_map(|((cid, month), (expense, income))| {
+            let net = expense - income;
+            (net != 0.0).then(|| ((cid, net < 0.0, month), net.abs()))
+        })
+        .collect();
+
     Ok((map, unlinked, unlinked_items))
 }
 
@@ -404,25 +432,28 @@ pub async fn compute_baselines(
             get_category_path(pool, *cid).await.unwrap_or_else(|| cname.clone())
         };
 
-        // Any credit at all, even a single refund, gives the category an
-        // income row -- deliberately, since one category can hold both sides
-        // (a pay and a bill, interest and fees) and they must not cancel out.
-        // The first half of the old `credit > debit || credit > 0` condition
-        // never decided anything; this is the same test, said once.
-        if *credit > 0.0 {
-            baselines.push(CategoryBaseline {
-                category_id,
-                category_path: category_path.clone(),
-                monthly_avg: credit / num_months,
-                is_income: true,
-            });
-        }
-        if *debit > 0.0 {
+        // A category is netted to a single row: what it costs you, less
+        // whatever comes back into it. Medicare rebates, insurance claims,
+        // refunds and reimbursements are filed against the cost they offset,
+        // so the average that matters is the net one -- a specialist's fee
+        // isn't $332 of income and $400 of spending, it's $68 out of pocket.
+        // Splitting the two sides reported the gross cost in the Avg /mo
+        // column and listed the rebate as income in the month breakdown,
+        // which is a way to read a refund as money coming in.
+        //
+        // Netting changes no net total: (debit - credit) either way. What it
+        // changes is that the two halves can no longer be read, grown or
+        // adjusted apart -- which is the point, and the cost: a category
+        // deliberately holding a pay *and* an unrelated bill now shows only
+        // the difference. Keep those in separate categories.
+        if *debit > 0.0 || *credit > 0.0 {
+            let net = debit - credit;
             baselines.push(CategoryBaseline {
                 category_id,
                 category_path,
-                monthly_avg: debit / num_months,
-                is_income: false,
+                monthly_avg: net.abs() / num_months,
+                is_income: net < 0.0,
+                offset: debit.min(*credit) / num_months,
             });
         }
     }
@@ -1034,9 +1065,13 @@ mod tests {
         assert!(sept.projected_net > oct.projected_net);
     }
 
-    /// Income and an expense in the SAME category must not cancel out.
+    /// Dated income and a dated expense in the SAME category net against
+    /// each other, as the category's history does: an agent's fee taken out
+    /// of the rent is a cost of that rent, not a separate outgoing. The
+    /// trade-off, worth keeping visible: a category deliberately holding two
+    /// unrelated flows now reports only the difference.
     #[tokio::test]
-    async fn both_sides_of_one_category_are_kept_apart() {
+    async fn both_sides_of_one_category_are_netted() {
         let (pool, scenario, defaults) = pool_with_a_dated_bill().await;
         for sql in [
             "INSERT INTO recurring_costs (name, amount, frequency, kind, category_id, next_due_date)
@@ -1055,24 +1090,19 @@ mod tests {
         .unwrap();
 
         let aug = result.months.iter().find(|m| m.month_key == "2026-08").unwrap();
-        // The category has a row per side, so both amounts must be present --
-        // netted to 1,380 would mean the two had been folded together.
-        let mut amounts: Vec<f64> = aug
-            .categories
-            .iter()
-            .filter(|c| c.category_id == 7)
-            .map(|c| c.amount)
-            .collect();
-        amounts.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        assert_eq!(amounts.len(), 2, "expected an income and an expense row, got {amounts:?}");
-        assert!(close(amounts[0], 120.0) && close(amounts[1], 1500.0), "got {amounts:?}");
-        // Income is this category's alone; expenses also carry the fixture's
-        // insurance average, so only the delta is this category's.
-        assert!(close(aug.projected_income, 1500.0), "income was {}", aug.projected_income);
+        // One row, on the side the month came out: 1,500 in less 120 out.
+        let rows: Vec<&ForecastCategoryAmount> =
+            aug.categories.iter().filter(|c| c.category_id == 7).collect();
+        assert_eq!(rows.len(), 1, "expected one netted row, got {rows:?}");
+        assert!(rows[0].is_income, "the net is income");
+        assert!(close(rows[0].amount, 1380.0), "got {}", rows[0].amount);
+        // Income is this category's alone; the fee is inside it, so expenses
+        // carry only the fixture's insurance average.
+        assert!(close(aug.projected_income, 1380.0), "income was {}", aug.projected_income);
         let insurance = 1200.0 / (181.0 / DAYS_PER_MONTH);
         assert!(
-            close(aug.projected_expenses, insurance + 120.0),
-            "expenses were {}, not {} + 120",
+            close(aug.projected_expenses, insurance),
+            "expenses were {}, not {}",
             aug.projected_expenses,
             insurance
         );
@@ -1163,14 +1193,134 @@ mod tests {
         // The figure lands on the expense side, where the category's history is.
         assert!(close(dear.projected_expenses - cheap.projected_expenses, 4500.0),
             "expenses moved by {}", dear.projected_expenses - cheap.projected_expenses);
-        // And nowhere else: the refund's own average is all the income side has.
+        // And nowhere else.
         assert!(close(dear.projected_income, cheap.projected_income),
             "income moved from {} to {}", cheap.projected_income, dear.projected_income);
         assert!(close(cheap.projected_net - dear.projected_net, 4500.0),
             "the net moved by {}", cheap.projected_net - dear.projected_net);
-        // The refund still projects -- the fix must not drop the other side.
-        let refund = 46.0 / (181.0 / DAYS_PER_MONTH);
-        assert!((cheap.projected_income - 5000.0 - refund).abs() < 60.0,
-            "income was {}", cheap.projected_income);
+        // The reimbursement is netted off the dining cost, so the only income
+        // in the projection is the pay -- not the pay plus a refund.
+        assert!((cheap.projected_income - 5000.0).abs() < 50.0,
+            "income was {}, not the salary alone", cheap.projected_income);
+    }
+
+    /// A rebate filed against the cost it offsets is not income. A category
+    /// holding both reads as one net figure, which is what the specialist
+    /// visit actually cost -- not $400 of spending and $300 of earnings.
+    #[tokio::test]
+    async fn rebates_are_netted_off_the_cost_rather_than_counted_as_income() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        for sql in [
+            "INSERT INTO accounts (id, name) VALUES (1, 'Everyday')",
+            "INSERT INTO categories (id, name) VALUES (1, 'Specialists'), (2, 'Salary'), (5, 'Other')",
+            "INSERT INTO transactions (account_id, category_id, date, description, debit)
+             VALUES (1, 5, '2025-06-01', 'older', 10), (1, 5, '2026-12-31', 'newer', 10)",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+        // $400 a month of visits, $300 a month of it claimed back.
+        for m in 1..=6 {
+            sqlx::query(
+                "INSERT INTO transactions (account_id, category_id, date, description, debit, credit)
+                 VALUES (1, 1, ?, 'Specialist', 400, 0),
+                        (1, 1, ?, 'Medicare rebate', 0, 300),
+                        (1, 2, ?, 'Pay', 0, 5000)",
+            )
+            .bind(format!("2026-{m:02}-15"))
+            .bind(format!("2026-{m:02}-20"))
+            .bind(format!("2026-{m:02}-10"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let bl = compute_baselines(&pool, "2026-01-01", "2026-06-30").await.unwrap();
+        let rows: Vec<_> = bl.iter().filter(|b| b.category_id == 1).collect();
+        assert_eq!(rows.len(), 1, "one netted row per category, got {rows:?}");
+        assert!(!rows[0].is_income, "the net is a cost, not income");
+        assert!((rows[0].monthly_avg - 100.0).abs() < 2.0,
+            "net averaged {}, not ~100", rows[0].monthly_avg);
+        assert!((rows[0].offset - 300.0).abs() < 4.0,
+            "offset was {}, not the ~300 netted off", rows[0].offset);
+
+        let scenario = Scenario {
+            id: 1,
+            name: "Test".to_string(),
+            description: None,
+            horizon: String::new(),
+            base_start_date: "2026-01-01".to_string(),
+            base_end_date: "2026-06-30".to_string(),
+            created_at: String::new(),
+        };
+        let defaults = ScenarioDefault {
+            id: 0,
+            scenario_id: 1,
+            default_adjustment_pct: 0.0,
+            income_growth_pct: 0.0,
+        };
+        let month = calculate_forecast(
+            &pool, &scenario, &[], &defaults, &HashSet::new(), 1, 0.0, None,
+        )
+        .await
+        .unwrap()
+        .months[0]
+            .clone();
+
+        // The rebate is nowhere on the income line, and the breakdown lists
+        // the category once.
+        assert!((month.projected_income - 5000.0).abs() < 50.0,
+            "income was {}, not the salary alone", month.projected_income);
+        assert!((month.projected_expenses - 100.0).abs() < 2.0,
+            "expenses were {}, not the ~100 net", month.projected_expenses);
+        assert_eq!(
+            month.categories.iter().filter(|c| c.category_id == 1).count(),
+            1,
+            "the category should appear once in the breakdown"
+        );
+    }
+
+    /// Netting must not flip a category that is genuinely income. A pay with
+    /// the odd correction against it stays on the income side, net of it.
+    #[tokio::test]
+    async fn a_pay_with_a_correction_against_it_stays_income() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        for sql in [
+            "INSERT INTO accounts (id, name) VALUES (1, 'Everyday')",
+            "INSERT INTO categories (id, name) VALUES (2, 'Salary'), (5, 'Other')",
+            "INSERT INTO transactions (account_id, category_id, date, description, debit)
+             VALUES (1, 5, '2025-06-01', 'older', 10), (1, 5, '2026-12-31', 'newer', 10)",
+            "INSERT INTO transactions (account_id, category_id, date, description, debit)
+             VALUES (1, 2, '2026-04-02', 'Overpayment returned', 600)",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+        for m in 1..=6 {
+            sqlx::query(
+                "INSERT INTO transactions (account_id, category_id, date, description, credit)
+                 VALUES (1, 2, ?, 'Pay', 5000)",
+            )
+            .bind(format!("2026-{m:02}-10"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let bl = compute_baselines(&pool, "2026-01-01", "2026-06-30").await.unwrap();
+        let row = bl.iter().find(|b| b.category_id == 2).unwrap();
+        assert!(row.is_income, "a salary category must stay income");
+        // 30,000 in less 600 back out, over ~5.95 months.
+        assert!((row.monthly_avg - 29_400.0 / (181.0 / DAYS_PER_MONTH)).abs() < 1.0,
+            "net pay averaged {}", row.monthly_avg);
+        assert_eq!(bl.iter().filter(|b| b.category_id == 2).count(), 1);
     }
 }

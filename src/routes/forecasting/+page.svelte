@@ -77,11 +77,14 @@
     income_growth_pct: number;
   }
 
-  // A category's monthly averages over the open scenario's base period.
+  // A category's net monthly average over the open scenario's base period.
+  // Netted, so exactly one of the two sides is non-zero; monthly_offset is
+  // what the netting absorbed (rebates off a cost, refunds off a pay).
   interface CategoryAverage {
     category_id: number;
     monthly_income: number;
     monthly_expense: number;
+    monthly_offset: number;
   }
 
   interface ScenarioBaselines {
@@ -562,15 +565,22 @@
     maximumFractionDigits: 0,
   });
 
-  // A category's base-period monthly average, on whichever side dominates
-  // (spending for most; income for e.g. salary). null = no transactions in the
-  // base period, so it projects at $0 unless given a fixed amount.
-  function categoryAverage(catId: number): { amount: number; income: boolean } | null {
+  // A category's net base-period monthly average: what it costs less anything
+  // credited back to it, on whichever side that comes out. null = no
+  // transactions in the base period, so it projects at $0 unless given a fixed
+  // amount. `offset` is what the netting took off, so the cell can say the
+  // figure is net of something rather than looking short by that much.
+  function categoryAverage(
+    catId: number,
+  ): { amount: number; income: boolean; offset: number } | null {
     const a = avgByCategory.get(catId);
     if (!a || (a.monthly_income === 0 && a.monthly_expense === 0)) return null;
-    return a.monthly_income > a.monthly_expense
-      ? { amount: a.monthly_income, income: true }
-      : { amount: a.monthly_expense, income: false };
+    const income = a.monthly_income > a.monthly_expense;
+    return {
+      amount: income ? a.monthly_income : a.monthly_expense,
+      income,
+      offset: a.monthly_offset ?? 0,
+    };
   }
 
   // What a category projects at each month if Fixed Amount is left blank.
@@ -1077,7 +1087,10 @@
         </li>
         <li>
           <strong>Adjust it</strong> (optional). <em>Avg /mo</em> shows each category's monthly
-          average from the base period, and the greyed figure in <em>Fixed Amount</em> is what it
+          average from the base period &mdash; a <em>net</em> one, so a Medicare rebate or an
+          insurance payout filed against the cost it offsets reduces that cost instead of
+          counting as income (a cell marked <em>net</em> had something taken off; hover it for
+          how much). The greyed figure in <em>Fixed Amount</em> is what it
           will project at if you change nothing. <em>% Adj</em> scales the average up or down
           (&minus;20 = spend 20% less), <em>Fixed Amount</em> replaces it with a set monthly
           figure, and unticking <em>Incl.</em> leaves it out entirely.
@@ -1200,7 +1213,7 @@
                   <tr>
                     <th class="incl-col" title="Include this category in this scenario's forecast">Incl.</th>
                     <th>Category</th>
-                    <th class="num-col" title="Average per month over the base period — the figure a % adjustment scales">Avg /mo</th>
+                    <th class="num-col" title="Net average per month over the base period — spending less any rebates or refunds credited back to the category. The figure a % adjustment scales.">Avg /mo</th>
                     <th class="num-col" title="What the upcoming expenses linked to this category add up to over the forecast window, spread per month — compare it with Avg /mo before adding both">Sched /mo</th>
                     <th class="basis-col" title="Where this category's monthly figure comes from: its average, the dated upcoming expenses, or both">Basis</th>
                     <th class="num-col">% Adj</th>
@@ -1231,10 +1244,13 @@
                         class="num-col avg-cell"
                         class:avg-income={avg?.income}
                         title={avg
-                          ? `Averaged ${wholeDollars.format(avg.amount)} ${avg.income ? "income" : "spending"} a month over the base period`
+                          ? `Averaged ${wholeDollars.format(avg.amount)} ${avg.income ? "income" : "spending"} a month over the base period` +
+                            (avg.offset > 0
+                              ? `, net of ${wholeDollars.format(avg.offset)} a month coming back the other way (rebates, refunds, reimbursements)`
+                              : "")
                           : "No transactions in the base period, so this projects at $0 unless you set a fixed amount"}
                       >
-                        {#if avg}{avg.income ? "+" : ""}{wholeDollars.format(avg.amount)}{:else}&mdash;{/if}
+                        {#if avg}{avg.income ? "+" : ""}{wholeDollars.format(avg.amount)}{#if avg.offset > 0}<span class="net-mark">net</span>{/if}{:else}&mdash;{/if}
                       </td>
                       <td
                         class="num-col sched-cell"
@@ -1822,6 +1838,15 @@
   .adj-table th.num-col { text-align: right; }
   .avg-cell { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
   .avg-income { color: var(--pos); }
+  /* Marks a figure the rebates/refunds in that category were netted out of,
+     so a cost that reads low has a visible reason rather than looking wrong. */
+  .net-mark {
+    margin-left: 0.35rem;
+    font-size: 0.68em;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.55;
+  }
   .row-excluded .avg-cell { color: var(--text-muted); }
   .header-actions { display: flex; gap: 0.5rem; }
   .base-period { font-size: 0.85rem; color: var(--text-primary); margin: -0.4rem 0 1rem; }
