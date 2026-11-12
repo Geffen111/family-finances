@@ -291,6 +291,22 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   scheduled part; a fixed amount is never scaled. Unknown sources are an error, not a
   silent fall back to the average. `save_scenario_adjustment` only deletes a 0%/no-fixed
   row when the source is `average` — otherwise a scheduled category would silently revert.
+- **A fixed amount has no side, so it has to be given one.** `scenario_adjustments` is
+  keyed by category, but baselines are split income/expense — and `compute_baselines`
+  gives a category an income row for *any* credit in the base period, a single refund
+  included (deliberately: one category can hold a pay and a bill, or interest and fees,
+  and they must not cancel out). Applying `fixed_amount` to **both** rows put it into the
+  projection twice, once each way: income and expenses each moved by it and the net came
+  out identical, so $5,000 and $500 drew the same line and the box looked like it did
+  nothing. One $46 dinner reimbursement was enough. `calculate_forecast` now resolves a
+  `fixed_side` per adjusted category once, before the month loop — the side that
+  category's base-period history is predominantly on, the expense side where it has none
+  (also the only side a synthesised row is guaranteed to have) — and the other side keeps
+  projecting its own average, so the refund isn't thrown away either. That dominant-side
+  rule is the same one the page's `categoryAverage` uses, which is what keeps the
+  "Projected /mo" column and the projection agreeing. A *percentage* needs none of this:
+  it scales each side, so the net scales with it — which is why a % adjustment always
+  appeared to work while a fixed amount appeared inert.
 - **Scheduled amounts in the forecast:** `services::forecast::scheduled_by_month` buckets
   `expand_bills` into `(category_id, is_income, "YYYY-MM")` once per run, before the month
   loop. It drops occurrences in `exclude_from_budget` categories, and `calculate_forecast`

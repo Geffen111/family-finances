@@ -96,6 +96,28 @@ pub async fn calculate_forecast(
         }
     }
 
+    // A fixed amount is a single figure for the whole category and carries no
+    // side of its own, so it has to land on exactly one of the category's
+    // baseline rows. A spending category with one refund in the base period
+    // has an income row as well as an expense row, and adding the fixed amount
+    // to both put it into the projection twice, once each way: income and
+    // expenses both moved by it and the net never budged, whatever you typed.
+    // One $46 reimbursement in a dining category was enough to make a $5,000
+    // figure look exactly like a $500 one. It lands on the side the category's
+    // history is predominantly on, and on the expense side where there is none
+    // (which is also the only side a synthesised row is guaranteed to have).
+    let mut fixed_side: HashMap<i64, bool> = HashMap::new();
+    for adj in adjustments {
+        let side_total = |income: bool| {
+            baselines
+                .iter()
+                .filter(|b| b.category_id == adj.category_id && b.is_income == income)
+                .map(|b| b.monthly_avg)
+                .sum::<f64>()
+        };
+        fixed_side.insert(adj.category_id, side_total(true) > side_total(false));
+    }
+
     for m in 0..months_ahead {
         let current_date = add_months(&start_date, m);
         let month_key = current_date.format("%Y-%m").to_string();
@@ -126,6 +148,13 @@ pub async fn calculate_forecast(
                 // goes up 10%" still means something on a scheduled category.
                 // A fixed amount is absolute and is never scaled.
                 let pct = 1.0 + adj.adjustment_pct / 100.0;
+                // None on the category's other side: see `fixed_side` above.
+                // The other side keeps projecting its own average, so a refund
+                // history isn't thrown away either.
+                let fixed = match fixed_side.get(&bl.category_id) {
+                    Some(side) if *side == bl.is_income => adj.fixed_amount,
+                    _ => None,
+                };
                 match adj.source.as_str() {
                     // Dated expenses *instead of* the average: the right pick
                     // when the bill is already in the base period, since the
@@ -136,10 +165,10 @@ pub async fn calculate_forecast(
                     "scheduled_plus_average" => scheduled * pct + bl.monthly_avg * pct,
                     // Dated expenses plus your own monthly figure for the rest,
                     // when the average isn't the number you'd use.
-                    "scheduled_plus_fixed" => scheduled * pct + adj.fixed_amount.unwrap_or(0.0),
+                    "scheduled_plus_fixed" => scheduled * pct + fixed.unwrap_or(0.0),
                     // "average" and anything unrecognised: unchanged behaviour.
-                    _ => match adj.fixed_amount {
-                        Some(fixed) => fixed,
+                    _ => match fixed {
+                        Some(f) => f,
                         None => bl.monthly_avg * pct,
                     },
                 }
@@ -374,7 +403,12 @@ pub async fn compute_baselines(
             get_category_path(pool, *cid).await.unwrap_or_else(|| cname.clone())
         };
 
-        if *credit > *debit || *credit > 0.0 {
+        // Any credit at all, even a single refund, gives the category an
+        // income row -- deliberately, since one category can hold both sides
+        // (a pay and a bill, interest and fees) and they must not cancel out.
+        // The first half of the old `credit > debit || credit > 0` condition
+        // never decided anything; this is the same test, said once.
+        if *credit > 0.0 {
             baselines.push(CategoryBaseline {
                 category_id,
                 category_path: category_path.clone(),
@@ -1041,5 +1075,101 @@ mod tests {
             aug.projected_expenses,
             insurance
         );
+    }
+
+    /// A fixed monthly figure has to change the projection. One refund in a
+    /// spending category gives it an income baseline row as well as an expense
+    /// one, and the fixed amount used to be applied to both -- income and
+    /// expenses each moved by it and the net came out identical, so $5,000 and
+    /// $500 drew the same line and the box looked like it did nothing.
+    #[tokio::test]
+    async fn a_fixed_amount_moves_the_net_even_with_a_refund_in_the_category() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        for sql in [
+            "INSERT INTO accounts (id, name) VALUES (1, 'Everyday')",
+            "INSERT INTO categories (id, name) VALUES (1, 'Dining'), (2, 'Salary'), (5, 'Other')",
+            "INSERT INTO transactions (account_id, category_id, date, description, debit)
+             VALUES (1, 5, '2025-06-01', 'older', 10), (1, 5, '2026-12-31', 'newer', 10)",
+            // The one reimbursement that makes this category two-sided.
+            "INSERT INTO transactions (account_id, category_id, date, description, credit)
+             VALUES (1, 1, '2026-03-05', 'Dinner split', 46)",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+        for m in 1..=6 {
+            sqlx::query(
+                "INSERT INTO transactions (account_id, category_id, date, description, debit, credit)
+                 VALUES (1, 1, ?, 'Cafe', 800, 0), (1, 2, ?, 'Pay', 0, 5000)",
+            )
+            .bind(format!("2026-{m:02}-15"))
+            .bind(format!("2026-{m:02}-10"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let scenario = Scenario {
+            id: 1,
+            name: "Test".to_string(),
+            description: None,
+            horizon: String::new(),
+            base_start_date: "2026-01-01".to_string(),
+            base_end_date: "2026-06-30".to_string(),
+            created_at: String::new(),
+        };
+        let defaults = ScenarioDefault {
+            id: 0,
+            scenario_id: 1,
+            default_adjustment_pct: 0.0,
+            income_growth_pct: 0.0,
+        };
+        let run = |fixed: f64| {
+            let scenario = scenario.clone();
+            let defaults = defaults.clone();
+            let pool = pool.clone();
+            async move {
+                let adj = [ScenarioAdjustment {
+                    id: 1,
+                    scenario_id: 1,
+                    category_id: 1,
+                    adjustment_pct: 0.0,
+                    fixed_amount: Some(fixed),
+                    source: "average".to_string(),
+                }];
+                calculate_forecast(
+                    &pool,
+                    &scenario,
+                    &adj,
+                    &defaults,
+                    &HashSet::new(),
+                    1,
+                    0.0,
+                    None,
+                )
+                .await
+                .unwrap()
+            }
+        };
+
+        let cheap = run(500.0).await.months[0].clone();
+        let dear = run(5000.0).await.months[0].clone();
+
+        // The figure lands on the expense side, where the category's history is.
+        assert!(close(dear.projected_expenses - cheap.projected_expenses, 4500.0),
+            "expenses moved by {}", dear.projected_expenses - cheap.projected_expenses);
+        // And nowhere else: the refund's own average is all the income side has.
+        assert!(close(dear.projected_income, cheap.projected_income),
+            "income moved from {} to {}", cheap.projected_income, dear.projected_income);
+        assert!(close(cheap.projected_net - dear.projected_net, 4500.0),
+            "the net moved by {}", cheap.projected_net - dear.projected_net);
+        // The refund still projects -- the fix must not drop the other side.
+        let refund = 46.0 / (181.0 / DAYS_PER_MONTH);
+        assert!((cheap.projected_income - 5000.0 - refund).abs() < 60.0,
+            "income was {}", cheap.projected_income);
     }
 }
