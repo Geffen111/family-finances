@@ -305,6 +305,18 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   the income side only where something income-y is actually scheduled. Occurrences with no
   category can't be attributed to anything; `get_scheduled_amounts` returns them as
   `unlinked_total`/`unlinked_items` so the page can say so instead of losing them.
+- **An inline save races the button next to it.** The forecasting page's adjustment
+  cells save on `change`, and the browser fires `change` while delivering the click that
+  blurred the input — so editing a cell and going straight to "Generate Forecast" sends
+  `save_scenario_adjustment` and `run_forecast` as two independent IPC calls with nothing
+  ordering them. Tauri runs commands concurrently and the pool hands each its own
+  connection, so the forecast reads the pre-edit rows and the charts come back unchanged;
+  pressing the button again "fixes" it, which is what makes it look like a rendering bug
+  rather than a race. The page keeps a `pendingWrites` promise chain: writes go through
+  `queueWrite` (chained, so two quick edits can't commit out of order) and `runForecast`
+  awaits it before invoking. Anything else that writes scenario config and is read back by
+  a command must join the same queue — and capture `selectedScenario.id` *before* queueing,
+  since the open scenario can change while a write waits.
 - **Forecast base period:** category averages divide by `base_period_months`
   (`services/forecast.rs`) — the period clamped to the imported data's date range, in days
   ÷ 30.44. Don't go back to counting whole months: `end_month − start_month` made

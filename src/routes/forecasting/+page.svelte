@@ -431,6 +431,23 @@
     }
   }
 
+  // Every edit in the adjustments table saves on `change`, and the browser
+  // fires `change` while it is delivering the click that moved focus away --
+  // so editing a cell and going straight to "Generate Forecast" sends the save
+  // and the forecast as two independent IPC calls with nothing ordering them.
+  // Tauri runs commands concurrently and the pool hands each its own
+  // connection, so run_forecast happily reads rows the save hasn't committed
+  // and projects the pre-edit numbers: you press the button and the charts come
+  // back unchanged. Writes join this queue; readers await it.
+  let pendingWrites: Promise<void> = Promise.resolve();
+  function queueWrite(run: () => Promise<void>): Promise<void> {
+    // Chained rather than counted, so two quick edits to the same row can't
+    // commit out of order. Both arms are `run` so a failed write still lets the
+    // next one through instead of wedging the queue.
+    pendingWrites = pendingWrites.then(run, run);
+    return pendingWrites;
+  }
+
   async function saveAdjustment(
     catId: number,
     pct: number,
@@ -438,18 +455,22 @@
     source: string,
   ) {
     if (!selectedScenario) return;
-    try {
-      await invoke("save_scenario_adjustment", {
-        scenarioId: selectedScenario.id,
-        categoryId: catId,
-        adjustmentPct: pct,
-        fixedAmount: fixed,
-        source,
-      });
-      await refreshScenarioConfig();
-    } catch (e) {
-      showToast(String(e), "error");
-    }
+    // Captured now: by the time this runs, the open scenario may have changed.
+    const scenarioId = selectedScenario.id;
+    return queueWrite(async () => {
+      try {
+        await invoke("save_scenario_adjustment", {
+          scenarioId,
+          categoryId: catId,
+          adjustmentPct: pct,
+          fixedAmount: fixed,
+          source,
+        });
+        await refreshScenarioConfig();
+      } catch (e) {
+        showToast(String(e), "error");
+      }
+    });
   }
 
   function sourceOf(adj: ScenarioAdjustmentWithPath | undefined): string {
@@ -500,16 +521,19 @@
 
   async function toggleCategoryExclusion(catId: number, include: boolean) {
     if (!selectedScenario) return;
-    try {
-      await invoke("set_scenario_category_exclusion", {
-        scenarioId: selectedScenario.id,
-        categoryId: catId,
-        excluded: !include,
-      });
-      await refreshScenarioConfig();
-    } catch (e) {
-      showToast(String(e), "error");
-    }
+    const scenarioId = selectedScenario.id;
+    return queueWrite(async () => {
+      try {
+        await invoke("set_scenario_category_exclusion", {
+          scenarioId,
+          categoryId: catId,
+          excluded: !include,
+        });
+        await refreshScenarioConfig();
+      } catch (e) {
+        showToast(String(e), "error");
+      }
+    });
   }
 
   const wholeDollars = new Intl.NumberFormat("en-AU", {
@@ -616,6 +640,9 @@
     forecastError = "";
     forecastResult = null;
     try {
+      // An edit made immediately before this click is still in flight; without
+      // this the forecast is computed from the rows as they were before it.
+      await pendingWrites;
       forecastResult = await invoke<ForecastComparison>("run_forecast", {
         scenarioIds: selectedForecastIds,
         monthsAhead,
