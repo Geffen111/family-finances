@@ -276,6 +276,14 @@
     --c4: #9db58c;
     --c5: #d98c6a;
     --c6: #e8c79b;
+    /* Category colour coding. The hue comes from the category name (see
+       categoryHue on the Upcoming page); only the saturation and lightness are
+       the theme's, which is what keeps a wheel of generated colours looking
+       like Hearth rather than a highlighter set. --cat-soft is the lightness
+       for a tinted background behind the same hue. */
+    --cat-sat: 40%;
+    --cat-light: 42%;
+    --cat-soft: 93%;
   }
 
   :global(.dark) {
@@ -305,6 +313,11 @@
     --c4: #aac39b;
     --c5: #e0987a;
     --c6: #e8c79b;
+    /* Lighter and less saturated on dark, where a 42%-light hue goes muddy
+       against #29241e, and the tint has to be dark rather than near-white. */
+    --cat-sat: 36%;
+    --cat-light: 66%;
+    --cat-soft: 25%;
   }
 
   .app-layout {

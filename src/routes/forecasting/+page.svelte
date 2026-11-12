@@ -105,6 +105,9 @@
     category_id: number;
     category_path: string;
     amount: number;
+    // One category can appear twice in a month (spending and a refund, a pay
+    // and a bill), so the side is what tells those two rows apart.
+    is_income: boolean;
   }
 
   interface ForecastMonth {
@@ -223,6 +226,13 @@
   let forecastResult = $state<ForecastComparison | null>(null);
   let forecastLoading = $state(false);
   let forecastError = $state("");
+
+  // Which point on the charts the breakdown table is showing: a series (0 is
+  // the baseline, then one per compared scenario, matching the chart's dataset
+  // order) and a month index. Null means the baseline's first month, which is
+  // all the table could ever show before.
+  let selectedPoint = $state<{ series: number; month: number } | null>(null);
+  let breakdownOpen = $state(false);
 
   // Adjustment editing
   let editingDefaults = $state(false);
@@ -485,6 +495,16 @@
     return source === "average" || source === "scheduled_plus_fixed";
   }
 
+  // Under `average` a fixed amount replaces the average outright, so there is
+  // nothing left for the % to scale and calculate_forecast never reads it.
+  // The box stayed live with a tooltip still offering to scale the average, so
+  // you could type a figure that changed nothing. Not true of
+  // `scheduled_plus_fixed`, where the % still scales the dated part (and the
+  // fixed extra is never scaled) -- so that one stays editable.
+  function pctIsDead(source: string, adj: ScenarioAdjustmentWithPath | undefined): boolean {
+    return source === "average" && adj?.fixed_amount != null;
+  }
+
   async function changeSource(
     catId: number,
     adj: ScenarioAdjustmentWithPath | undefined,
@@ -709,6 +729,11 @@
           responsive: true,
           maintainAspectRatio: true,
           interaction: { intersect: false, mode: "index" },
+          onClick: (event, _els, chart) => pointFromEvent(chart, event),
+          onHover: (event, els) => {
+            const target = event.native?.target as HTMLElement | null;
+            if (target) target.style.cursor = els.length > 0 ? "pointer" : "default";
+          },
           scales: {
             y: {
               beginAtZero: true,
@@ -795,6 +820,13 @@
           responsive: true,
           maintainAspectRatio: true,
           interaction: { intersect: false, mode: "index" },
+          // Offset by one: this chart's first column is "Now", today's actual
+          // balance, which is not one of the projected months.
+          onClick: (event, _els, chart) => pointFromEvent(chart, event, 1),
+          onHover: (event, els) => {
+            const target = event.native?.target as HTMLElement | null;
+            if (target) target.style.cursor = els.length > 0 ? "pointer" : "default";
+          },
           scales: {
             y: {
               beginAtZero: !negative,
@@ -842,10 +874,52 @@
     return rows;
   });
 
-  let avgBaselines = $derived.by(() => {
-    if (!forecastResult || forecastResult.base.months.length === 0) return [];
-    const first = forecastResult.base.months[0];
-    return first.categories.filter((c) => c.amount > 0);
+  // Clicking a point steers the breakdown below: that scenario's figures for
+  // that month. The month index is shared by both charts, except that the cash
+  // chart prepends a "Now" column for today's balance -- its caller subtracts
+  // one, and a click on "Now" is not a projected month at all.
+  function pickPoint(series: number, month: number) {
+    if (month < 0) return;
+    selectedPoint = { series, month };
+    breakdownOpen = true;
+  }
+
+  // The nearest point to the click across every line, rather than elements[0]
+  // of an `index`-mode hit -- that is always dataset 0, so clicking a
+  // scenario's line would quietly break down the baseline instead.
+  function pointFromEvent(
+    chart: import("chart.js").Chart,
+    event: unknown,
+    monthOffset = 0,
+  ) {
+    const hit = chart.getElementsAtEventForMode(
+      event as Event,
+      "nearest",
+      { intersect: false },
+      true,
+    );
+    if (hit.length === 0) return;
+    pickPoint(hit[0].datasetIndex, hit[0].index - monthOffset);
+  }
+
+  let breakdown = $derived.by(() => {
+    if (!forecastResult) return null;
+    const all = [forecastResult.base, ...forecastResult.scenarios];
+    // A scenario can be unticked, or the horizon shortened, while a point is
+    // still selected -- fall back rather than showing nothing.
+    const result = all[selectedPoint?.series ?? 0] ?? all[0];
+    const month = result.months[selectedPoint?.month ?? 0] ?? result.months[0];
+    if (!month) return null;
+    const side = (income: boolean) =>
+      month.categories
+        .filter((c) => c.is_income === income && c.amount > 0)
+        .sort((a, b) => b.amount - a.amount);
+    return {
+      name: result.scenario_name,
+      month,
+      expenses: side(false),
+      income: side(true),
+    };
   });
 
   // --- Debt payoff planner ---
@@ -1191,10 +1265,12 @@
                           type="number"
                           class="adj-input"
                           value={adj?.adjustment_pct ?? 0}
-                          disabled={excluded}
-                          title={usesScheduled(source)
-                            ? "Scales the dated amounts (and the average, where this basis uses it) — a fixed amount is never scaled"
-                            : "Scales the average: −20 = spend 20% less"}
+                          disabled={excluded || pctIsDead(source, adj)}
+                          title={pctIsDead(source, adj)
+                            ? "The fixed amount beside this replaces the average outright, so there is nothing for a % to scale. Clear it to go back to a % of the average."
+                            : usesScheduled(source)
+                              ? "Scales the dated amounts (and the average, where this basis uses it) — a fixed amount is never scaled"
+                              : "Scales the average: −20 = spend 20% less"}
                           onchange={(e) => {
                             const val = parseFloat((e.target as HTMLInputElement).value) || 0;
                             saveAdjustment(cat.id, val, adj?.fixed_amount ?? null, source);
@@ -1385,20 +1461,59 @@
         </table>
       </div>
 
-      {#if avgBaselines.length > 0}
-        <details class="breakdown-details">
-          <summary>Month 1 Category Breakdown (Baseline)</summary>
+      {#if breakdown}
+        <details class="breakdown-details" bind:open={breakdownOpen}>
+          <summary>
+            {breakdown.month.label} breakdown &mdash; {breakdown.name}
+          </summary>
+          <p class="breakdown-hint">
+            Click any point on either chart above to break that month down.
+            {#if selectedPoint}
+              <button class="btn btn-sm" onclick={() => { selectedPoint = null; }}>
+                Back to month 1
+              </button>
+            {/if}
+          </p>
           <table class="summary-table">
             <thead>
               <tr><th>Category</th><th class="num-col">Amount</th></tr>
             </thead>
             <tbody>
-              {#each avgBaselines as cat}
+              {#each breakdown.expenses as cat (`e${cat.category_id}`)}
                 <tr>
                   <td>{cat.category_path}</td>
                   <td class="num-col">{fmt(cat.amount)}</td>
                 </tr>
               {/each}
+              <tr class="breakdown-total">
+                <td>Total expenses</td>
+                <td class="num-col">{fmt(breakdown.month.projected_expenses)}</td>
+              </tr>
+            </tbody>
+            {#if breakdown.income.length > 0}
+              <tbody>
+                <tr class="breakdown-group"><td colspan="2">Income</td></tr>
+                {#each breakdown.income as cat (`i${cat.category_id}`)}
+                  <tr>
+                    <td>{cat.category_path}</td>
+                    <td class="num-col positive">+{fmt(cat.amount)}</td>
+                  </tr>
+                {/each}
+                <tr class="breakdown-total">
+                  <td>Total income</td>
+                  <td class="num-col positive">+{fmt(breakdown.month.projected_income)}</td>
+                </tr>
+              </tbody>
+            {/if}
+            <tbody>
+              <tr class="breakdown-total">
+                <td>Net</td>
+                <td
+                  class="num-col"
+                  class:positive={breakdown.month.projected_net >= 0}
+                  class:negative={breakdown.month.projected_net < 0}
+                >{fmt(breakdown.month.projected_net)}</td>
+              </tr>
             </tbody>
           </table>
         </details>
@@ -1778,6 +1893,26 @@
   .positive { color: var(--pos); font-weight: 600; }
   .negative { color: var(--neg); font-weight: 600; }
 
+  .breakdown-hint {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin: 0.4rem 0 0.2rem;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+  }
+  .breakdown-group td {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    padding-top: 0.7rem;
+  }
+  .breakdown-total td {
+    font-weight: 600;
+    border-top: 1px solid var(--border-color);
+  }
   .breakdown-details { margin-top: 0.5rem; }
   .breakdown-details summary { cursor: pointer; font-size: 0.85rem; color: var(--accent); padding: 0.3rem 0; }
 

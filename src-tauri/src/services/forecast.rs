@@ -192,6 +192,7 @@ pub async fn calculate_forecast(
                 category_id: bl.category_id,
                 category_path: bl.category_path.clone(),
                 amount: compounded,
+                is_income: bl.is_income,
             });
         }
 

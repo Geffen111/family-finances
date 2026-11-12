@@ -173,7 +173,7 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   not the DB on purpose: the DB syncs via OneDrive, and a filter left on one machine
   shouldn't follow you to another. JSON can't carry a `Set`, so Sets are enveloped as
   `{__set: [...]}` and rebuilt on load. Pages wired up: dashboard, transactions,
-  forecasting, ask. When restoring a reference to a row (account, scenario), check it
+  forecasting, recurring, ask. When restoring a reference to a row (account, scenario), check it
   still exists and fall back — and give a filter the user can't see a way back
   (transactions has "Clear filters").
 - **Cash & accounts** is one figure with one definition:
@@ -341,6 +341,26 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
 - **Budget rollover:** `categories.rollover` flag; carryover is computed on the fly in
   `get_budget_status` (monthly_budget × months since the category's first txn − spend
   before the period), not stored.
+- **Category colour coding** (the Upcoming cards and list): the *hue* is hashed from the
+  category **name** with FNV-1a and set as an inline `--cat-hue` on the row; the
+  saturation and lightness come from the theme (`--cat-sat`/`--cat-light`, plus
+  `--cat-soft` for the tinted chip background, in `+layout.svelte`). That split is the
+  point — a full wheel of generated hues at the theme's own muted S/L reads as Hearth
+  rather than a highlighter set, and it needs no second palette for dark mode. Hashed
+  from the name, not the id: a recreated category keeps its colour, and sequential ids
+  would hand neighbouring categories near-identical hues. An uncategorised row simply
+  doesn't get the `cat-coded` class and keeps the plain border. **`.chip-cat` must stay
+  below `.chip` in the stylesheet** — same specificity, so the later rule wins and the
+  plain chip's own background and border would otherwise override the tint.
+- **The forecast's category breakdown is driven by clicking a chart.** Both charts call
+  `pointFromEvent`, which resolves the **nearest** point across every line
+  (`getElementsAtEventForMode(..., "nearest", ...)`) — not `elements[0]` of the
+  `index`-mode hit, which is always dataset 0, so clicking a scenario's line would
+  quietly break down the baseline. Series 0 is the baseline and the rest follow the
+  chart's dataset order; the cash chart passes a month offset of 1 because its first
+  column is "Now" (today's balance, not a projected month). `ForecastCategoryAmount`
+  carries `is_income` so the table can separate the two sides — without it a category
+  with both shows twice under one name with no way to tell $500 out from $500 in.
 - **Emoji in Svelte:** put emoji in markup (browser decodes `&#x...;`) OR use `"\u{1F4C8}"`
   inside `{}` expressions — a raw `"&#x...;"` string in an expression renders as literal text.
 - **Modals:** overlay `role="presentation"` closes on `e.target === e.currentTarget`; inner

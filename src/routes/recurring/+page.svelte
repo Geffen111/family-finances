@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { formatDate } from "$lib/format";
   import { showToast } from "$lib/stores/toast.svelte";
+  import { loadView, saveView } from "$lib/viewState";
 
   interface RecurringCost {
     id: number;
@@ -95,6 +96,29 @@
     "Yearly",
     ONE_OFF,
   ];
+
+  const SORTS = [
+    { value: "due", label: "Next due" },
+    { value: "category", label: "Category" },
+    { value: "amount", label: "Amount" },
+    { value: "monthly", label: "Per month" },
+    { value: "name", label: "Name" },
+  ];
+
+  // How the list is sorted and how dense it is. View state, so it is per
+  // machine and survives a restart -- see $lib/viewState.
+  const saved = loadView("recurring", {
+    sortKey: "due",
+    sortAsc: true,
+    dense: false,
+  });
+  let sortKey = $state(saved.sortKey);
+  let sortAsc = $state(saved.sortAsc);
+  let dense = $state(saved.dense);
+
+  $effect(() => {
+    saveView("recurring", { sortKey, sortAsc, dense });
+  });
 
   let costs = $state<RecurringCost[]>([]);
   let categories = $state<Category[]>([]);
@@ -210,6 +234,78 @@
       )
       .reduce((s, c) => s + c.amount, 0),
   );
+
+  // A stable hue per category, so one category is the same colour every time,
+  // in both views, on both machines. Hashed from the name rather than the id:
+  // a category keeps its colour if it is recreated, and sequential ids would
+  // hand neighbouring categories near-identical hues. FNV-1a, because a
+  // simpler sum gives anagrams and near-misses the same colour.
+  function categoryHue(name: string): number {
+    let h = 2166136261;
+    for (let i = 0; i < name.length; i++) {
+      h ^= name.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return Math.abs(h) % 360;
+  }
+
+  // Set as an inline custom property; the theme supplies the saturation and
+  // lightness (see --cat-sat in +layout.svelte). Undefined for an
+  // uncategorised item, which then keeps the plain border.
+  function hueStyle(c: RecurringCost): string | undefined {
+    return c.category_name ? `--cat-hue: ${categoryHue(c.category_name)}` : undefined;
+  }
+
+  // Comparators are all written ascending -- earliest, smallest, A first --
+  // and reversed as a whole, so the direction toggle means the same thing
+  // whichever column is chosen. Anything missing a value sorts last in BOTH
+  // directions: an item with no next date isn't the earliest one.
+  function compare(a: RecurringCost, b: RecurringCost): number {
+    switch (sortKey) {
+      case "amount":
+        return a.amount - b.amount;
+      case "monthly":
+        return a.monthly_cost - b.monthly_cost;
+      case "category":
+        return (a.category_name ?? "").localeCompare(b.category_name ?? "", undefined, {
+          sensitivity: "base",
+        });
+      case "name":
+        return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+      default: {
+        const ad = a.next_occurrence ?? a.next_due_date;
+        const bd = b.next_occurrence ?? b.next_due_date;
+        if (ad == null || bd == null) return 0;
+        return ad < bd ? -1 : ad > bd ? 1 : 0;
+      }
+    }
+  }
+
+  function missingSortValue(c: RecurringCost): boolean {
+    if (sortKey === "category") return c.category_name == null;
+    if (sortKey === "due") return (c.next_occurrence ?? c.next_due_date) == null;
+    // A one-off has no per-month figure at all, so it has nothing to sort by.
+    if (sortKey === "monthly") return c.frequency === ONE_OFF;
+    return false;
+  }
+
+  let sortedCosts = $derived.by(() => {
+    const rows = [...costs];
+    rows.sort((a, b) => {
+      // Paused, ended and paid items sink below the live ones whatever the
+      // sort -- the list is about what is still coming.
+      const live = Number(isLive(b)) - Number(isLive(a));
+      if (live !== 0) return live;
+      const gap = Number(missingSortValue(a)) - Number(missingSortValue(b));
+      if (gap !== 0) return gap;
+      const by = compare(a, b);
+      const ordered = sortAsc ? by : -by;
+      // A stable tie-break, or two items with the same amount swap places
+      // every time the list reloads.
+      return ordered !== 0 ? ordered : a.name.localeCompare(b.name);
+    });
+    return rows;
+  });
 
   $effect(() => { load(); });
 
@@ -469,9 +565,89 @@
       </div>
     </div>
   {:else}
+    <div class="list-toolbar">
+      <label class="toolbar-field">
+        Sort by
+        <select bind:value={sortKey}>
+          {#each SORTS as o}<option value={o.value}>{o.label}</option>{/each}
+        </select>
+      </label>
+      <button
+        class="btn btn-sm"
+        onclick={() => { sortAsc = !sortAsc; }}
+        title={sortAsc ? "Ascending — earliest, smallest, A first" : "Descending"}
+      >
+        {sortAsc ? "↑ Ascending" : "↓ Descending"}
+      </button>
+      <span class="toolbar-spacer"></span>
+      <div class="seg" role="group" aria-label="View">
+        <button class="btn btn-sm" class:seg-on={!dense} onclick={() => { dense = false; }}>Cards</button>
+        <button class="btn btn-sm" class:seg-on={dense} onclick={() => { dense = true; }}>List</button>
+      </div>
+    </div>
+
+    {#if dense}
+      <div class="list">
+        <div class="list-head">
+          <span>Name</span>
+          <span>Category</span>
+          <span class="num">Amount</span>
+          <span>Frequency</span>
+          <span class="num">Per month</span>
+          <span>Next</span>
+          <span></span>
+        </div>
+        {#each sortedCosts as c (c.id)}
+          <div
+            class="row"
+            class:inactive={!isLive(c)}
+            class:cat-coded={c.category_name}
+            style={hueStyle(c)}
+          >
+            <span class="row-name" title={c.notes ?? c.name}>
+              {c.name}
+              {#if !c.active}<span class="chip chip-muted">Paused</span>{/if}
+              {#if hasEnded(c)}<span class="chip chip-muted">Ended</span>{/if}
+              {#if isSpent(c)}<span class="chip chip-muted">{c.kind === INCOME ? "Received" : "Paid"}</span>{/if}
+              {#if isOverdue(c)}<span class="chip chip-overdue">{c.kind === INCOME ? "Not received" : "Not paid"}</span>{/if}
+            </span>
+            <span class="row-cat">
+              {#if c.category_name}<span class="chip chip-cat">{c.category_name}</span>{/if}
+            </span>
+            <span class="row-amount num" class:row-in={c.kind === INCOME}>
+              {c.kind === INCOME ? "+" : ""}{fmt(c.amount)}
+            </span>
+            <span class="row-freq">{c.frequency}</span>
+            <span class="row-monthly num" class:row-in={c.kind === INCOME}>
+              {#if c.frequency === ONE_OFF}&mdash;{:else}{c.kind === INCOME ? "+" : ""}{fmt(c.monthly_cost)}{/if}
+            </span>
+            <span class="row-due">
+              {#if c.next_occurrence ?? c.next_due_date}
+                {formatDate(c.next_occurrence ?? c.next_due_date)}
+              {:else}&mdash;{/if}
+            </span>
+            <span class="row-actions">
+              {#if c.frequency === ONE_OFF}
+                <button class="btn btn-sm" onclick={() => togglePaid(c)}>
+                  {c.paid_on == null ? "Mark paid" : "Not paid"}
+                </button>
+              {/if}
+              <button class="btn btn-sm" onclick={() => openEdit(c)}>Edit</button>
+              <button class="btn btn-sm btn-danger" onclick={() => openDelete(c)}>Delete</button>
+            </span>
+          </div>
+        {/each}
+      </div>
+    {:else}
     <div class="grid">
-      {#each costs as c (c.id)}
-        <div class="card" class:inactive={!isLive(c)} class:card-income={c.kind === INCOME}>
+      {#each sortedCosts as c (c.id)}
+        <div
+          class="card"
+          class:inactive={!isLive(c)}
+          class:card-income={c.kind === INCOME}
+          class:cat-coded={c.category_name}
+          style={hueStyle(c)}
+        >
           <div class="card-top">
             <span class="card-name">{c.name}</span>
             <div class="card-actions">
@@ -495,7 +671,7 @@
                 {c.kind === INCOME ? "+" : ""}{fmt(c.monthly_cost)}<span class="per">/mo</span>
               </span>
             {/if}
-            {#if c.category_name}<span class="chip">{c.category_name}</span>{/if}
+            {#if c.category_name}<span class="chip chip-cat">{c.category_name}</span>{/if}
             {#if !c.active}<span class="chip chip-muted">Paused</span>{/if}
             {#if hasEnded(c)}<span class="chip chip-muted">Ended {formatDate(c.end_date)}</span>{/if}
             {#if isSpent(c)}<span class="chip chip-muted">{c.kind === INCOME ? "Received" : "Paid"} {formatDate(c.paid_on)}</span>{/if}
@@ -514,6 +690,7 @@
         </div>
       {/each}
     </div>
+    {/if}
   {/if}
 </div>
 
@@ -726,8 +903,63 @@
   .empty-state { border: 2px dashed var(--border-color); border-radius: var(--radius-card); padding: 3rem 2rem; text-align: center; color: var(--text-secondary); }
   .empty-actions { display: flex; gap: 0.5rem; justify-content: center; margin-top: 1rem; }
 
+  /* Sort + density controls. */
+  .list-toolbar { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .toolbar-field { display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--text-secondary); }
+  .toolbar-field select { font-size: 0.8rem; padding: 0.25rem 0.4rem; border: 1px solid var(--border-color);
+    border-radius: 6px; background: var(--bg-card); color: var(--text-primary); }
+  .toolbar-spacer { flex: 1; }
+  .seg { display: flex; gap: 0.25rem; }
+  .seg-on { background: var(--accent-soft); border-color: var(--accent); color: var(--nav-active-fg); }
+
+  /* One category, one colour. The hue is set inline per row from the category
+     name; the theme owns the rest (see --cat-sat in +layout.svelte). */
+  .cat-coded {
+    --cat-color: hsl(var(--cat-hue) var(--cat-sat) var(--cat-light));
+    --cat-bg: hsl(var(--cat-hue) var(--cat-sat) var(--cat-soft));
+  }
+
+  /* Compact list. A grid rather than a table so the rows can keep the card
+     styling (left colour bar, dimmed when not live) and stay one element. */
+  .list { display: flex; flex-direction: column; gap: 0.3rem; }
+  .list-head, .row {
+    display: grid;
+    grid-template-columns: minmax(0, 2.1fr) minmax(0, 1.3fr) 7rem 7.5rem 7rem 7rem auto;
+    align-items: center;
+    gap: 0.6rem;
+  }
+  .list-head { padding: 0 0.8rem 0.3rem; font-size: 0.7rem; text-transform: uppercase;
+    letter-spacing: 0.04em; color: var(--text-muted); }
+  .row { background: var(--bg-card); border: 1px solid var(--border-color);
+    border-left: 4px solid var(--border-color); border-radius: 10px;
+    padding: 0.45rem 0.8rem; font-size: 0.84rem; color: var(--text-secondary); }
+  .row.cat-coded { border-left-color: var(--cat-color); }
+  .row.inactive { opacity: 0.55; }
+  .row .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .list-head .num { text-align: right; }
+  .row-name { display: flex; align-items: center; gap: 0.4rem; min-width: 0; font-weight: 600;
+    color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-cat { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-amount { font-weight: 700; color: var(--text-primary); }
+  .row-monthly { color: var(--text-primary); }
+  .row-in { color: var(--pos); }
+  .row-freq, .row-due { font-size: 0.78rem; }
+  .row-actions { display: flex; gap: 0.3rem; justify-content: flex-end; }
+
+  /* The grid's cards drop to a single column well before the list does, so the
+     list gets its own breakpoint: below it the columns are unreadable and the
+     rows stack into something card-shaped anyway. */
+  @media (max-width: 1100px) {
+    .list-head { display: none; }
+    .row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.7rem; }
+    .row-name { flex: 1 1 100%; }
+    .row .num { text-align: left; }
+    .row-actions { flex: 1 1 auto; }
+  }
+
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1.25rem; }
   .card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-card); padding: 1.25rem; box-shadow: var(--app-shadow); }
+  .card.cat-coded { border-left: 4px solid var(--cat-color); }
   .card.inactive { opacity: 0.6; }
   .card-top { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
   .card-name { font-size: 1.05rem; font-weight: 700; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -741,6 +973,14 @@
   .chip { font-size: 0.72rem; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 999px; padding: 0.1rem 0.5rem; }
   .chip-muted { color: var(--text-muted); }
   .chip-overdue { color: var(--neg); border-color: var(--neg); }
+  /* After .chip, not before: same specificity, so the later rule wins and an
+     earlier .chip-cat would be overridden by the plain chip's own background
+     and border. */
+  .chip-cat {
+    color: var(--cat-color, inherit);
+    background: var(--cat-bg, var(--bg-secondary));
+    border-color: var(--cat-color, var(--border-color));
+  }
   /* Income reads as a different kind of row at a glance, without relying on
      the sign alone. */
   .card-income .card-amount, .card-income .card-monthly { color: var(--pos); }

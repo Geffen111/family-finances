@@ -261,6 +261,11 @@ pub struct ForecastCategoryAmount {
     pub category_id: i64,
     pub category_path: String,
     pub amount: f64,
+    /// Which side of the category this row is: one category can appear twice
+    /// in a month (a pay and a bill, spending and a refund), and without this
+    /// the breakdown shows two rows with the same name and no way to tell a
+    /// $500 expense from $500 coming in.
+    pub is_income: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
