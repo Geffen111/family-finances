@@ -12,6 +12,23 @@ use tauri::State;
 const EXCLUDE_BUDGET: &str =
     " AND NOT EXISTS (SELECT 1 FROM categories xc WHERE xc.id = t.category_id AND xc.exclude_from_budget = 1)";
 
+// A category's **net** spend over the grouped rows: what went out, less
+// anything credited back to it. Rebates, refunds and reimbursements are
+// categorised against the cost they offset, so the net is the only figure
+// that means anything -- a $400 specialist visit with a $332 Medicare rebate
+// cost $68, and reporting the $400 as spending while the $332 shows up under
+// income reads a refund as money coming in. The forecast nets the same way
+// (`services::forecast::compute_baselines`), which is what keeps a category's
+// projection and its history telling the same story.
+//
+// Pair it with `HAVING <alias> > 0` in any spending view: a category that
+// nets the other way round isn't spending, and belongs in the income one.
+const NET_SPEND: &str = "CAST(COALESCE(SUM(t.debit), 0) - COALESCE(SUM(t.credit), 0) AS REAL)";
+
+// The same netting the other way up: what came into the category less
+// anything paid back out of it.
+const NET_INCOME: &str = "CAST(COALESCE(SUM(t.credit), 0) - COALESCE(SUM(t.debit), 0) AS REAL)";
+
 fn apply_date_filters(
     sql: &mut String,
     start_date: &Option<String>,
@@ -44,24 +61,45 @@ pub async fn get_dashboard_summary(
     start_date: Option<String>,
     end_date: Option<String>,
 ) -> Result<DashboardSummary, String> {
-    let mut base = String::from("SELECT CAST(COALESCE(SUM(t.credit), 0) AS REAL) FROM transactions t WHERE 1=1");
-    base.push_str(EXCLUDE_BUDGET);
-    let params = apply_date_filters(&mut base, &start_date, &end_date, "t");
+    dashboard_summary(&pool, start_date, end_date).await
+}
 
-    let mut q = sqlx::query_scalar::<_, f64>(&base);
+/// Plain pool, so the netting has a test. See `NET_SPEND`.
+pub async fn dashboard_summary(
+    pool: &SqlitePool,
+    start_date: Option<String>,
+    end_date: Option<String>,
+) -> Result<DashboardSummary, String> {
+    // The headline figures are the netted categories added back up, not raw
+    // credits and debits: a rebate inside a spending category comes off that
+    // category instead of inflating the income tile. The grouping is what
+    // makes the netting mean something -- netted over everything at once,
+    // income and expenses would simply cancel each other out.
+    //
+    // `tx_effective` rather than `transactions` because the grouping is by
+    // category: a split transaction's debit has to land on each split's own
+    // category for its net to be right. The two agree on the grand totals.
+    let mut inner = String::from(
+        "SELECT t.category_id, COALESCE(SUM(t.debit), 0) - COALESCE(SUM(t.credit), 0) AS net
+         FROM tx_effective t WHERE 1=1",
+    );
+    inner.push_str(EXCLUDE_BUDGET);
+    let params = apply_date_filters(&mut inner, &start_date, &end_date, "t");
+    inner.push_str(" GROUP BY t.category_id");
+
+    let totals_sql = format!(
+        "SELECT CAST(COALESCE(SUM(CASE WHEN net < 0 THEN -net END), 0) AS REAL),
+                CAST(COALESCE(SUM(CASE WHEN net > 0 THEN net END), 0) AS REAL)
+         FROM ({inner})"
+    );
+    let mut q = sqlx::query_as::<_, (f64, f64)>(&totals_sql);
     for p in &params {
         q = q.bind(p);
     }
-    let total_income: f64 = q.fetch_one(&*pool).await.unwrap_or(0.0);
-
-    let mut exp_base = String::from("SELECT CAST(COALESCE(SUM(t.debit), 0) AS REAL) FROM transactions t WHERE 1=1");
-    exp_base.push_str(EXCLUDE_BUDGET);
-    let params2 = apply_date_filters(&mut exp_base, &start_date, &end_date, "t");
-    let mut q = sqlx::query_scalar::<_, f64>(&exp_base);
-    for p in &params2 {
-        q = q.bind(p);
-    }
-    let total_expenses: f64 = q.fetch_one(&*pool).await.unwrap_or(0.0);
+    let (total_income, total_expenses) = q
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("DB query error: {}", e))?;
 
     let mut cnt_base = String::from("SELECT COUNT(*) FROM transactions t WHERE 1=1");
     let params3 = apply_date_filters(&mut cnt_base, &start_date, &end_date, "t");
@@ -69,23 +107,23 @@ pub async fn get_dashboard_summary(
     for p in &params3 {
         q = q.bind(p);
     }
-    let transaction_count: i64 = q.fetch_one(&*pool).await.unwrap_or(0);
+    let transaction_count: i64 = q.fetch_one(pool).await.unwrap_or(0);
 
-    let mut top_base = String::from(
-        "SELECT COALESCE(c.name, 'Uncategorised'), CAST(COALESCE(SUM(t.debit), 0) AS REAL) as total
+    let mut top_base = format!(
+        "SELECT COALESCE(c.name, 'Uncategorised'), {NET_SPEND} as total
          FROM tx_effective t
          LEFT JOIN categories c ON t.category_id = c.id
          WHERE 1=1"
     );
     top_base.push_str(EXCLUDE_BUDGET);
     let params4 = apply_date_filters(&mut top_base, &start_date, &end_date, "t");
-    top_base.push_str(" GROUP BY c.name ORDER BY total DESC LIMIT 1");
+    top_base.push_str(" GROUP BY c.name HAVING total > 0 ORDER BY total DESC LIMIT 1");
 
     let mut q = sqlx::query_as::<_, (String, f64)>(&top_base);
     for p in &params4 {
         q = q.bind(p);
     }
-    let (top_category, top_category_amount) = q.fetch_optional(&*pool).await
+    let (top_category, top_category_amount) = q.fetch_optional(pool).await
         .map_err(|e| format!("DB query error: {}", e))?
         .unwrap_or(("N/A".to_string(), 0.0));
 
@@ -105,26 +143,38 @@ pub async fn get_spending_by_category(
     start_date: Option<String>,
     end_date: Option<String>,
 ) -> Result<Vec<CategorySpending>, String> {
-    let mut query = String::from(
+    spending_by_category(&pool, start_date, end_date).await
+}
+
+/// Plain pool, so the netting has a test. See `NET_SPEND`.
+pub async fn spending_by_category(
+    pool: &SqlitePool,
+    start_date: Option<String>,
+    end_date: Option<String>,
+) -> Result<Vec<CategorySpending>, String> {
+    // No `t.debit > 0` filter any more: the credits have to be in the group
+    // for the netting to see them. The count is then every transaction behind
+    // the figure, the rebates included, which is what it should be.
+    let mut query = format!(
         "SELECT
             COALESCE(c.name, 'Uncategorised'),
             CASE WHEN cp.name IS NOT NULL THEN cp.name || ' > ' || c.name ELSE COALESCE(c.name, 'Uncategorised') END,
-            CAST(COALESCE(SUM(t.debit), 0) AS REAL),
+            {NET_SPEND} AS total,
             COUNT(*)
          FROM tx_effective t
          LEFT JOIN categories c ON t.category_id = c.id
          LEFT JOIN categories cp ON c.parent_id = cp.id
-         WHERE t.debit > 0"
+         WHERE 1=1"
     );
     query.push_str(EXCLUDE_BUDGET);
     let params = apply_date_filters(&mut query, &start_date, &end_date, "t");
-    query.push_str(" GROUP BY c.name ORDER BY SUM(t.debit) DESC");
+    query.push_str(" GROUP BY c.name HAVING total > 0 ORDER BY total DESC");
 
     let mut q = sqlx::query_as::<_, (String, String, f64, i64)>(&query);
     for p in &params {
         q = q.bind(p);
     }
-    let rows = q.fetch_all(&*pool)
+    let rows = q.fetch_all(pool)
         .await
         .map_err(|e| format!("DB query error: {}", e))?;
 
@@ -170,14 +220,17 @@ pub async fn get_category_spending_tree(
 
     // Direct spend per category over the period (one row per category id; the
     // NULL id row is uncategorised spend).
-    let mut query = String::from(
-        "SELECT t.category_id, CAST(COALESCE(SUM(t.debit), 0) AS REAL), COUNT(*)
+    let mut query = format!(
+        "SELECT t.category_id, {NET_SPEND} AS net, COUNT(*)
          FROM tx_effective t
-         WHERE t.debit > 0",
+         WHERE 1=1",
     );
     query.push_str(EXCLUDE_BUDGET);
     let params = apply_date_filters(&mut query, &start_date, &end_date, "t");
-    query.push_str(" GROUP BY t.category_id");
+    // A category whose refunds outweigh its spending is dropped rather than
+    // subtracted from its parent: a negative slice of a spending breakdown is
+    // not a thing, and the surplus shows up as income instead.
+    query.push_str(" GROUP BY t.category_id HAVING net > 0");
 
     let mut q = sqlx::query_as::<_, (Option<i64>, f64, i64)>(&query);
     for p in &params {
@@ -272,13 +325,23 @@ pub async fn get_monthly_trends(
     start_date: Option<String>,
     end_date: Option<String>,
 ) -> Result<Vec<MonthlyTrend>, String> {
-    let mut query = String::from(
-        "SELECT strftime('%Y-%m', t.date), CAST(COALESCE(SUM(t.credit), 0) AS REAL), CAST(COALESCE(SUM(t.debit), 0) AS REAL)
-         FROM transactions t WHERE 1=1"
+    // Netted per category *within each month*, then added up — the same rule
+    // as the summary tiles, so the bars and the tiles can't disagree.
+    let mut inner = String::from(
+        "SELECT strftime('%Y-%m', t.date) AS ym, t.category_id,
+                COALESCE(SUM(t.debit), 0) - COALESCE(SUM(t.credit), 0) AS net
+         FROM tx_effective t WHERE 1=1"
     );
-    query.push_str(EXCLUDE_BUDGET);
-    let params = apply_date_filters(&mut query, &start_date, &end_date, "t");
-    query.push_str(" GROUP BY strftime('%Y-%m', t.date) ORDER BY 1 ASC");
+    inner.push_str(EXCLUDE_BUDGET);
+    let params = apply_date_filters(&mut inner, &start_date, &end_date, "t");
+    inner.push_str(" GROUP BY ym, t.category_id");
+
+    let query = format!(
+        "SELECT ym,
+                CAST(COALESCE(SUM(CASE WHEN net < 0 THEN -net END), 0) AS REAL),
+                CAST(COALESCE(SUM(CASE WHEN net > 0 THEN net END), 0) AS REAL)
+         FROM ({inner}) GROUP BY ym ORDER BY ym ASC"
+    );
 
     let mut q = sqlx::query_as::<_, (String, f64, f64)>(&query);
     for p in &params {
@@ -311,8 +374,11 @@ pub async fn get_spending_trend_by_category(
     end_date: Option<String>,
     category_ids: Option<Vec<i64>>,
 ) -> Result<Vec<CategoryTrend>, String> {
-    let mut query = String::from(
-        "SELECT c.id, COALESCE(c.name, 'Uncategorised'), strftime('%Y-%m', t.date), CAST(COALESCE(SUM(t.debit), 0) AS REAL)
+    // Netted per category-month, and deliberately not clamped at zero: a
+    // month whose rebates landed after the bills really did cost less than
+    // nothing, and flattening that to $0 would hide where the money went.
+    let mut query = format!(
+        "SELECT c.id, COALESCE(c.name, 'Uncategorised'), strftime('%Y-%m', t.date), {NET_SPEND}
          FROM tx_effective t
          LEFT JOIN categories c ON t.category_id = c.id
          WHERE 1=1"
@@ -390,11 +456,22 @@ pub async fn get_budget_status(
     start_date: Option<String>,
     end_date: Option<String>,
 ) -> Result<Vec<BudgetStatus>, String> {
+    budget_status(&pool, start_date, end_date).await
+}
+
+/// Plain pool, so the netting has a test. See `NET_SPEND`.
+pub async fn budget_status(
+    pool: &SqlitePool,
+    start_date: Option<String>,
+    end_date: Option<String>,
+) -> Result<Vec<BudgetStatus>, String> {
     // Actual spend per budgeted category, over the given period. The date
     // filter lives inside a correlated subquery so categories with no
     // spending in the period still appear (actual = 0).
+    // Net spend, so a rebate counts against the budget it was spent out of.
     let mut actual = String::from(
-        "CAST(COALESCE((SELECT SUM(t.debit) FROM tx_effective t WHERE t.category_id = c.id",
+        "CAST(COALESCE((SELECT COALESCE(SUM(t.debit), 0) - COALESCE(SUM(t.credit), 0)
+                        FROM tx_effective t WHERE t.category_id = c.id",
     );
     let mut params: Vec<String> = Vec::new();
     if let Some(sd) = &start_date {
@@ -424,18 +501,22 @@ pub async fn get_budget_status(
         q = q.bind(p);
     }
     let rows = q
-        .fetch_all(&*pool)
+        .fetch_all(pool)
         .await
         .map_err(|e| format!("DB query error: {}", e))?;
 
     let mut result = Vec::with_capacity(rows.len());
     for (category_id, name, path, monthly_budget, rollover, actual) in rows {
+        // Refunds can outrun the spending in a short period. "Minus $40 of a
+        // $300 budget" isn't a thing a progress bar can draw, and the honest
+        // reading is simply that nothing was spent.
+        let actual = actual.max(0.0);
         // Carryover is only meaningful for rollover categories when we know the
         // period start: bank = monthly_budget × (months elapsed before the
         // period) − spend before the period.
         let carryover = if rollover {
             if let Some(sd) = &start_date {
-                compute_carryover(&pool, category_id, monthly_budget, sd).await?
+                compute_carryover(pool, category_id, monthly_budget, sd).await?
             } else {
                 0.0
             }
@@ -473,7 +554,9 @@ async fn compute_carryover(
     start_date: &str,
 ) -> Result<f64, String> {
     let row = sqlx::query_as::<_, (Option<String>, f64)>(
-        "SELECT MIN(date), CAST(COALESCE(SUM(debit), 0) AS REAL)
+        // Net, like the period's own spend: a rebate banked before the period
+        // started is budget that was never really spent.
+        "SELECT MIN(date), CAST(COALESCE(SUM(debit), 0) - COALESCE(SUM(credit), 0) AS REAL)
          FROM tx_effective WHERE category_id = ? AND date < ?",
     )
     .bind(category_id)
@@ -510,19 +593,34 @@ pub struct IncomeSource {
     pub percentage: f64,
 }
 
-/// Income (credits) grouped by category over the period. Income isn't split, so
-/// this reads the base transactions table.
+/// Net income grouped by category over the period: what came in, less anything
+/// paid back out of the same category. A category that nets the other way is
+/// spending, not income, and is left out — which is what keeps a Medicare
+/// rebate off this chart and against the medical bill it belongs to.
+///
+/// Reads `tx_effective` because the grouping is by category: splits are
+/// debit-only, so a split transaction's debits have to land on their own
+/// categories before anything is subtracted.
 #[tauri::command]
 pub async fn get_income_by_category(
     pool: State<'_, SqlitePool>,
     start_date: Option<String>,
     end_date: Option<String>,
 ) -> Result<Vec<IncomeSource>, String> {
-    let mut query = String::from(
-        "SELECT COALESCE(c.name, 'Uncategorised'), CAST(COALESCE(SUM(t.credit), 0) AS REAL) AS total
-         FROM transactions t
+    income_by_category(&pool, start_date, end_date).await
+}
+
+/// Plain pool, so the netting has a test. See `NET_INCOME`.
+pub async fn income_by_category(
+    pool: &SqlitePool,
+    start_date: Option<String>,
+    end_date: Option<String>,
+) -> Result<Vec<IncomeSource>, String> {
+    let mut query = format!(
+        "SELECT COALESCE(c.name, 'Uncategorised'), {NET_INCOME} AS total
+         FROM tx_effective t
          LEFT JOIN categories c ON t.category_id = c.id
-         WHERE t.credit > 0",
+         WHERE 1=1",
     );
     query.push_str(EXCLUDE_BUDGET);
     let params = apply_date_filters(&mut query, &start_date, &end_date, "t");
@@ -532,7 +630,7 @@ pub async fn get_income_by_category(
     for p in &params {
         q = q.bind(p);
     }
-    let rows = q.fetch_all(&*pool).await.map_err(|e| format!("DB query error: {}", e))?;
+    let rows = q.fetch_all(pool).await.map_err(|e| format!("DB query error: {}", e))?;
     let grand: f64 = rows.iter().map(|r| r.1).sum();
     Ok(rows
         .into_iter()
@@ -549,14 +647,14 @@ async fn movers_spend(
     s: NaiveDate,
     e: NaiveDate,
 ) -> Result<Vec<(String, f64)>, String> {
-    sqlx::query_as::<_, (String, f64)>(
-        "SELECT COALESCE(c.name, 'Uncategorised'), CAST(COALESCE(SUM(t.debit), 0) AS REAL) AS total
+    sqlx::query_as::<_, (String, f64)>(&format!(
+        "SELECT COALESCE(c.name, 'Uncategorised'), {NET_SPEND} AS total
          FROM tx_effective t
          LEFT JOIN categories c ON t.category_id = c.id
-         WHERE t.debit > 0 AND t.date >= ? AND t.date <= ?
+         WHERE t.date >= ? AND t.date <= ?
            AND NOT EXISTS (SELECT 1 FROM categories xc WHERE xc.id = t.category_id AND xc.exclude_from_budget = 1)
-         GROUP BY c.name",
-    )
+         GROUP BY c.name HAVING total > 0",
+    ))
     .bind(s.format("%Y-%m-%d").to_string())
     .bind(e.format("%Y-%m-%d").to_string())
     .fetch_all(pool)
@@ -647,11 +745,11 @@ pub async fn get_budget_suggestions(
     let start_s = start.format("%Y-%m-%d").to_string();
     let end_s = today.format("%Y-%m-%d").to_string();
 
-    let rows = sqlx::query_as::<_, (i64, String, Option<f64>, f64)>(
+    let rows = sqlx::query_as::<_, (i64, String, Option<f64>, f64)>(&format!(
         "SELECT c.id,
                 CASE WHEN cp.name IS NOT NULL THEN cp.name || ' > ' || c.name ELSE c.name END,
                 c.monthly_budget,
-                CAST(COALESCE(SUM(t.debit), 0) AS REAL) AS spend
+                {NET_SPEND} AS spend
          FROM categories c
          LEFT JOIN categories cp ON c.parent_id = cp.id
          JOIN tx_effective t ON t.category_id = c.id
@@ -660,7 +758,7 @@ pub async fn get_budget_suggestions(
          GROUP BY c.id
          HAVING spend > 0
          ORDER BY spend DESC",
-    )
+    ))
     .bind(&start_s)
     .bind(&end_s)
     .fetch_all(&*pool)
@@ -776,4 +874,159 @@ pub async fn get_net_worth_trend(pool: State<'_, SqlitePool>) -> Result<Vec<NetW
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    /// A migrated database holding one month of a household that claims money
+    /// back: $400 of specialist visits with a $300 Medicare rebate filed
+    /// against the same category, $150 of groceries, and a $5,000 pay.
+    async fn pool_with_a_rebate() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        for sql in [
+            "INSERT INTO accounts (id, name) VALUES (1, 'Everyday')",
+            "INSERT INTO categories (id, name, monthly_budget) VALUES (10, 'Medical', 300)",
+            "INSERT INTO categories (id, name) VALUES (11, 'Groceries'), (12, 'Salary')",
+            "INSERT INTO transactions (account_id, category_id, date, description, debit)
+             VALUES (1, 10, '2026-03-04', 'Specialist', 400),
+                    (1, 11, '2026-03-06', 'Coles', 150)",
+            "INSERT INTO transactions (account_id, category_id, date, description, credit)
+             VALUES (1, 10, '2026-03-20', 'Medicare rebate', 300),
+                    (1, 12, '2026-03-15', 'Pay', 5000)",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+        pool
+    }
+
+    fn march() -> (Option<String>, Option<String>) {
+        (Some("2026-03-01".to_string()), Some("2026-03-31".to_string()))
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 0.01
+    }
+
+    /// The rebate comes off the medical bill instead of being added to the
+    /// income tile. $5,300 of credits is $5,000 of income and a $100 cost.
+    #[tokio::test]
+    async fn the_summary_tiles_report_netted_categories() {
+        let pool = pool_with_a_rebate().await;
+        let (s, e) = march();
+        let summary = dashboard_summary(&pool, s, e).await.unwrap();
+
+        assert!(close(summary.total_income, 5000.0), "income {}", summary.total_income);
+        assert!(close(summary.total_expenses, 250.0), "expenses {}", summary.total_expenses);
+        assert!(close(summary.net, 4750.0), "net {}", summary.net);
+        // Groceries at $150 now outspends the $100 net of the medical visit;
+        // gross, the $400 would have taken the top slot.
+        assert_eq!(summary.top_category, "Groceries");
+        assert!(close(summary.top_category_amount, 150.0));
+        // Every row still counts, the rebate included.
+        assert_eq!(summary.transaction_count, 4);
+    }
+
+    /// The netting must not quietly change the net: whatever moves between
+    /// the income and expense tiles, the difference is what it always was.
+    #[tokio::test]
+    async fn netting_leaves_the_net_where_it_was() {
+        let pool = pool_with_a_rebate().await;
+        let (s, e) = march();
+        let summary = dashboard_summary(&pool, s.clone(), e.clone()).await.unwrap();
+
+        let gross: (f64, f64) = sqlx::query_as(
+            "SELECT CAST(COALESCE(SUM(credit), 0) AS REAL), CAST(COALESCE(SUM(debit), 0) AS REAL)
+             FROM transactions WHERE date >= ? AND date <= ?",
+        )
+        .bind(s.unwrap())
+        .bind(e.unwrap())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(close(gross.0 - gross.1, summary.net), "net moved");
+        // ...and it is a different split of the same number.
+        assert!(gross.0 > summary.total_income);
+    }
+
+    /// Spending by category reports the net cost, and a month whose rebates
+    /// outran its bills drops out of a *spending* breakdown entirely.
+    #[tokio::test]
+    async fn spending_by_category_is_net_and_drops_categories_in_credit() {
+        let pool = pool_with_a_rebate().await;
+        sqlx::query(
+            "INSERT INTO transactions (account_id, category_id, date, description, credit)
+             VALUES (1, 11, '2026-03-28', 'Grocery refund', 500)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (s, e) = march();
+        let rows = spending_by_category(&pool, s, e).await.unwrap();
+        let names: Vec<&str> = rows.iter().map(|r| r.category_name.as_str()).collect();
+        assert_eq!(names, vec!["Medical"], "got {names:?}");
+        assert!(close(rows[0].total, 100.0), "medical {}", rows[0].total);
+        // Percentages are of the netted total, so they still add to 100.
+        assert!(close(rows[0].percentage, 100.0));
+        // Both the visit and the rebate sit behind that figure.
+        assert_eq!(rows[0].transaction_count, 2);
+    }
+
+    /// A rebate is not an income source. It belongs against the bill, so the
+    /// income chart shows the pay alone.
+    #[tokio::test]
+    async fn income_by_category_leaves_out_a_category_that_nets_to_a_cost() {
+        let pool = pool_with_a_rebate().await;
+        let (s, e) = march();
+        let rows = income_by_category(&pool, s, e).await.unwrap();
+
+        assert_eq!(rows.len(), 1, "got {rows:?}");
+        assert_eq!(rows[0].category_name, "Salary");
+        assert!(close(rows[0].total, 5000.0));
+        assert!(close(rows[0].percentage, 100.0));
+    }
+
+    /// Money claimed back is budget that wasn't spent: $400 of visits less a
+    /// $300 rebate is a third of a $300 budget, not 133% of it.
+    #[tokio::test]
+    async fn a_rebate_counts_against_the_budget_it_was_spent_from() {
+        let pool = pool_with_a_rebate().await;
+        let (s, e) = march();
+        let rows = budget_status(&pool, s, e).await.unwrap();
+        let medical = rows.iter().find(|r| r.name == "Medical").unwrap();
+
+        assert!(close(medical.actual, 100.0), "actual {}", medical.actual);
+        assert!(close(medical.percentage, 100.0 / 300.0 * 100.0), "pct {}", medical.percentage);
+    }
+
+    /// Refunds can outrun spending over a short window. A negative "actual"
+    /// is not something a progress bar can draw, and the honest reading is
+    /// that nothing was spent.
+    #[tokio::test]
+    async fn a_category_more_than_refunded_reads_as_nothing_spent() {
+        let pool = pool_with_a_rebate().await;
+        sqlx::query(
+            "INSERT INTO transactions (account_id, category_id, date, description, credit)
+             VALUES (1, 10, '2026-03-25', 'Insurance payout', 250)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (s, e) = march();
+        let rows = budget_status(&pool, s, e).await.unwrap();
+        let medical = rows.iter().find(|r| r.name == "Medical").unwrap();
+
+        assert!(close(medical.actual, 0.0), "actual {}", medical.actual);
+        assert!(medical.percentage >= 0.0, "pct {}", medical.percentage);
+    }
 }

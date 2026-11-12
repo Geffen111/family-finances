@@ -1010,14 +1010,20 @@
     </div>
 
     <div class="summary-cards">
-      <div class="card">
+      <div
+        class="card"
+        title="Money in, counted per category: a refund or rebate filed against a cost comes off that cost instead of counting here."
+      >
         <div class="card-top">
           <span class="card-label">Total Income</span>
           <span class="card-icon card-icon-income">&#x1F4C8;</span>
         </div>
         <div class="card-value card-income">{fmt(summary.total_income)}</div>
       </div>
-      <div class="card">
+      <div
+        class="card"
+        title="Money out, net of anything credited back to the same category — rebates, refunds and reimbursements reduce the cost they were filed against."
+      >
         <div class="card-top">
           <span class="card-label">Total Expenses</span>
           <span class="card-icon card-icon-expenses">&#x1F4C9;</span>

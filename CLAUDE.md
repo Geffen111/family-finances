@@ -160,10 +160,41 @@ splitting). Register new commands in `src-tauri/src/lib.rs`.
   split (split category + amount as `debit`) and passes non-split transactions through
   unchanged. **Category-grouped reporting must read `tx_effective`, not `transactions`**
   (spending by category/tree/trend, budget status + carryover, budget suggestions, top
-  category, forecast baseline, category movers). Overall income/expense totals and any
-  non-category aggregation still read the base `transactions` table (splits sum to the
-  debit, so totals are identical). Splits are debit-only and validated to sum to the
-  transaction's debit.
+  category, forecast baseline, category movers, AI insights, the summary CSV export, and
+  now the dashboard's headline tiles and monthly trend, which group by category to net).
+  Splits are debit-only and validated to sum to the transaction's debit, so the two agree
+  on any non-category total — but the moment a query groups by category, a split's debits
+  have to land on their own categories before anything is subtracted from them.
+- **A category's figure is a net one, everywhere.** Rebates, refunds, reimbursements and
+  insurance payouts are categorised against the cost they offset, so **every**
+  category-grouped figure in the app is `SUM(debit) - SUM(credit)` over that category, not
+  the gross. A $400 specialist visit with a $332 Medicare rebate is a $68 cost — reporting
+  $400 of spending beside $332 of "income" reads a refund as money coming in. The two SQL
+  fragments are `dashboard::NET_SPEND` / `NET_INCOME`; the forecast does the same in
+  `compute_baselines` and `scheduled_by_month`. Use them rather than writing a bare
+  `SUM(t.debit)` for a new category-grouped query.
+  Four things follow, and all four are deliberate:
+  - **A spending view pairs it with `HAVING <alias> > 0`.** A category that nets the other
+    way isn't spending and belongs in the income view; `income_by_category` applies the
+    same rule in reverse, which is what keeps a rebate off the income chart. `COUNT(*)`
+    then counts the credits too — it's the number of transactions behind the figure.
+  - **Netting changes no net total.** `debit - credit` either way: the dashboard's Net tile
+    and the forecast's net line are unmoved, and a test asserts it
+    (`netting_leaves_the_net_where_it_was`). What moves is the *split* between income and
+    expenses, which is the whole point. **The headline Income/Expenses tiles and the
+    monthly trend therefore group by category first and add the netted sides up** — netted
+    over everything at once, income and expenses would simply cancel.
+  - **Exceptions, both on purpose:** `get_spending_trend_by_category` is *not* clamped at
+    zero (a month whose rebates landed after the bills really did cost less than nothing),
+    while `budget_status.actual` *is* (a negative "actual" is not something a progress bar
+    can draw).
+  - **The cost:** the two halves can no longer be read or adjusted apart, so a category
+    deliberately holding a pay *and* an unrelated bill now shows only the difference. Keep
+    those in separate categories. Where the netting absorbed something, the forecasting
+    page says so (`CategoryAverage.monthly_offset`, which marks the cell `net`).
+  The four dashboard commands with tests (`dashboard_summary`, `spending_by_category`,
+  `income_by_category`, `budget_status`) are plain-pool functions with a `#[tauri::command]`
+  wrapper, for the same reason `apply_category_edit` is.
 - **Per-page view state** lives in `src/lib/viewState.ts` (`loadView`/`saveView`/
   `clearView`, localStorage, one key per page). A page declares its defaults once,
   initialises each `$state` from the result, and writes back in a single `$effect` that

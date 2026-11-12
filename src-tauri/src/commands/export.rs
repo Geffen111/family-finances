@@ -52,11 +52,14 @@ pub async fn export_summary_csv(
     end_date: Option<String>,
 ) -> Result<String, String> {
     let mut query = String::from(
+        // Net spend per category, the same figure the dashboard shows, so an
+        // exported summary and the screen it was exported from agree.
         "SELECT COALESCE(c.name, 'Uncategorised') as category_name, \
-         CAST(SUM(t.debit) AS REAL) as total, COUNT(*) as transaction_count \
-         FROM transactions t \
+         CAST(COALESCE(SUM(t.debit), 0) - COALESCE(SUM(t.credit), 0) AS REAL) as total, \
+         COUNT(*) as transaction_count \
+         FROM tx_effective t \
          LEFT JOIN categories c ON t.category_id = c.id \
-         WHERE t.debit > 0"
+         WHERE 1=1"
     );
 
     if start_date.is_some() {
@@ -65,7 +68,7 @@ pub async fn export_summary_csv(
     if end_date.is_some() {
         query.push_str(" AND t.date <= ?");
     }
-    query.push_str(" GROUP BY t.category_id ORDER BY total DESC");
+    query.push_str(" GROUP BY t.category_id HAVING total > 0 ORDER BY total DESC");
 
     let mut q = sqlx::query_as::<_, (String, f64, i64)>(&query);
 

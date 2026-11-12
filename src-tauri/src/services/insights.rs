@@ -124,11 +124,16 @@ async fn query_category_totals(
     end: &str,
 ) -> Result<Vec<CategoryTotal>, String> {
     let rows = sqlx::query_as::<_, (String, f64)>(
-        "SELECT COALESCE(c.name, 'Uncategorised') as category, CAST(COALESCE(SUM(t.debit), 0) AS REAL) as total
-         FROM transactions t
+        // Net spend per category, as every other view reports it: the model
+        // shouldn't be told a specialist visit cost $400 when $332 of it came
+        // back. tx_effective so a split's debits land on their own categories.
+        "SELECT COALESCE(c.name, 'Uncategorised') as category,
+                CAST(COALESCE(SUM(t.debit), 0) - COALESCE(SUM(t.credit), 0) AS REAL) as total
+         FROM tx_effective t
          LEFT JOIN categories c ON t.category_id = c.id
-         WHERE t.debit > 0 AND t.date >= ? AND t.date <= ?
+         WHERE t.date >= ? AND t.date <= ?
          GROUP BY c.name
+         HAVING total > 0
          ORDER BY total DESC",
     )
     .bind(start)
@@ -151,11 +156,12 @@ async fn query_monthly_changes(
     let rows = sqlx::query_as::<_, (String, String, f64)>(
         "SELECT COALESCE(c.name, 'Uncategorised') as category,
                 strftime('%Y-%m', t.date) as month,
-                CAST(COALESCE(SUM(t.debit), 0) AS REAL) as total
-         FROM transactions t
+                CAST(COALESCE(SUM(t.debit), 0) - COALESCE(SUM(t.credit), 0) AS REAL) as total
+         FROM tx_effective t
          LEFT JOIN categories c ON t.category_id = c.id
-         WHERE t.debit > 0 AND t.date >= ? AND t.date <= ?
+         WHERE t.date >= ? AND t.date <= ?
          GROUP BY c.name, strftime('%Y-%m', t.date)
+         HAVING total > 0
          ORDER BY c.name, month",
     )
     .bind(start)
