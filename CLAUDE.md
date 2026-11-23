@@ -68,10 +68,20 @@ advisories, for different reasons:
   ignore the moment a bump is possible.
 
 Known npm advisories, all dev/build-time and none currently fixable: `@sveltejs/kit`
-2.70.3 carries two lows (open redirect via enhanced form submission; XSS via an untrusted
-cache-control header on a prerendered page) whose fix is the 3.0 major — neither is
-reachable here, since the static adapter ships no server to issue a redirect or set a
-header. `deepmerge` 4.3.1 (prototype poisoning, via `vite-plugin-svelte`) names 4.3.2 as
+carries **four**, and all four are ignored by GHSA id in `audit.ignore` in
+`pnpm-workspace.yaml` (which documents each one; `auditConfig.ignoreGhsas` is the
+deprecated spelling, and the section needs **pnpm 12** — pnpm 11 ignores it, so verify
+with `npx pnpm@12 audit --audit-level high`, not a bare local `pnpm audit`). Two lows
+(open redirect via enhanced form submission; XSS via an untrusted cache-control header on
+a prerendered page), one moderate (private `query.batch` functions colliding) and one
+**high** (DoS parsing form data from a remote functions `form`, GHSA-3r8g-jcqq-3p5j,
+published 2026-11-23 — it is what first failed the audit). None is reachable: the static
+adapter ships no server to issue a redirect, set a header or handle a request, and remote
+functions aren't enabled (no `$app/server`, no `.remote.ts`). The fix for every one is
+SvelteKit **≥3.1.1**, which peers at Vite ^8 / TypeScript ^6 / vite-plugin-svelte ^7
+against our Vite 6 + TS 5.6 — a deliberate toolchain upgrade, not an advisory patch. Do
+that upgrade on its own and drop all four ignores with it. `deepmerge` 4.3.1 (prototype
+poisoning, via `vite-plugin-svelte`) names 4.3.2 as
 the patch, but **4.3.2 was never published** — don't add an override for it, `pnpm install`
 would fail on a version that doesn't exist. It is a build-time dependency and never reaches
 the bundle.

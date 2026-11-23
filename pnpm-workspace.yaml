@@ -22,3 +22,37 @@ overrides:
   devalue: "^5.9.3"
   # <1.2.2: event-loop DoS. Pulled in by vite/postcss.
   source-map-js: "^1.2.2"
+# Advisories the `--audit-level high` gate in audit.yml should not fail on.
+# Same bargain as src-tauri/.cargo/audit.toml: a gate that goes red every week
+# for something unreachable is a gate nobody reads, so each entry has to say
+# why it can't reach us -- and gets deleted the moment that stops being true.
+#
+# `audit.ignore` is the current spelling; `auditConfig.ignoreGhsas` is
+# deprecated (pnpm still reads it, warns, and prefers this section). GHSA ids
+# only -- pnpm has no CVE or whole-package form. **This section needs pnpm 12**,
+# which is what CI pins; pnpm 11 ignores it, so a local `pnpm audit` on an older
+# pnpm still reports all four and exits 1. Check with
+# `npx pnpm@12 audit --audit-level high` before concluding the gate is broken.
+#
+# All four below need a running SvelteKit server to reach. We build with
+# @sveltejs/adapter-static and an index.html fallback (see svelte.config.js),
+# so the bundle Tauri ships is a static SPA: no server, no request handling,
+# nothing listening. The fix for every one of them is SvelteKit >= 3.1.1, and
+# that peers at Vite ^8 / TypeScript ^6 / vite-plugin-svelte ^7 against our
+# Vite 6 + TS 5.6 -- a toolchain upgrade worth doing deliberately, not to
+# silence an advisory that can't fire. Re-check these when SvelteKit 3 lands.
+audit:
+  ignore:
+    # GHSA-3r8g-jcqq-3p5j (high) -- DoS parsing form data from a remote
+    # functions `form`. Remote functions are a server feature and aren't
+    # enabled: no `$app/server` import and no `.remote.ts` anywhere in src/.
+    - GHSA-3r8g-jcqq-3p5j
+    # GHSA-6cf5-gc4q-fm3x -- private `query.batch` functions can collide.
+    # Remote functions again, same reason.
+    - GHSA-6cf5-gc4q-fm3x
+    # GHSA-pfhg-q3qv-9q6r -- open redirect via enhanced form submission.
+    # Needs a server to issue the redirect.
+    - GHSA-pfhg-q3qv-9q6r
+    # GHSA-27mw-82g8-phjj -- XSS via an untrusted cache-control header on a
+    # prerendered page. Needs a server to set the header.
+    - GHSA-27mw-82g8-phjj
